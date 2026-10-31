@@ -81,13 +81,22 @@ public:
   }
 
   void tick(unsigned long now) {
-    applyCommand(now);
+    //Commands can spend seconds on hardware, the next tick brings a fresh now
+    if (applyCommand(now)) {
+      return;
+    }
 
     switch (phase) {
       case Phase::Waiting:
         if (now - lastReadingStart > interval) {
           startReading(now);
         }
+        break;
+
+      case Phase::PowerOn:
+        warmupStart = now;
+        host.setPhPower(true);
+        phase = Phase::Warmup;
         break;
 
       case Phase::Holding:
@@ -124,7 +133,7 @@ public:
 
 private:
 
-  enum class Phase { Waiting, Holding, Warmup, Sampling, Restarting };
+  enum class Phase { Waiting, Holding, PowerOn, Warmup, Sampling, Restarting };
   enum class Job { Reading, Ph4, Ph7, Manual };
 
   static const int sampleTotal = 20;
@@ -150,10 +159,11 @@ private:
   unsigned long holdStart = 0;
   unsigned long restartStart = 0;
 
-  void applyCommand(unsigned long now) {
-    CycleCommand command = pending.exchange(CycleCommand::None);
+  //The command stays pending until applied so status() reads Busy throughout
+  bool applyCommand(unsigned long now) {
+    CycleCommand command = pending.load();
     if (command == CycleCommand::None) {
-      return;
+      return false;
     }
 
     if (phase == Phase::Warmup || phase == Phase::Sampling) {
@@ -172,15 +182,15 @@ private:
         break;
 
       case CycleCommand::MeasurePh4:
-        startMeasurement(Job::Ph4, now);
+        startMeasurement(Job::Ph4);
         break;
 
       case CycleCommand::MeasurePh7:
-        startMeasurement(Job::Ph7, now);
+        startMeasurement(Job::Ph7);
         break;
 
       case CycleCommand::MeasureManual:
-        startMeasurement(Job::Manual, now);
+        startMeasurement(Job::Manual);
         break;
 
       case CycleCommand::WipeAndRestart:
@@ -195,21 +205,22 @@ private:
       case CycleCommand::None:
         break;
     }
+
+    pending.compare_exchange_strong(command, CycleCommand::None);
+    return true;
   }
 
   void startReading(unsigned long now) {
     lastReadingStart = now;
+    startMeasurement(Job::Reading);
     current = Reading();
     current.wt = host.readTemperature();
     current.ec = host.readEc();
-    startMeasurement(Job::Reading, now);
   }
 
-  void startMeasurement(Job newJob, unsigned long now) {
+  void startMeasurement(Job newJob) {
     job = newJob;
-    host.setPhPower(true);
-    warmupStart = now;
-    phase = Phase::Warmup;
+    phase = Phase::PowerOn;
   }
 
   void startRestart(unsigned long now) {

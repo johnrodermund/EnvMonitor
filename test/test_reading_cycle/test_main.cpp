@@ -15,11 +15,39 @@ struct FakeHost : CycleHost {
   float savedPh7 = 0;
   bool wiped = false;
   bool restarted = false;
+  unsigned long *clock = nullptr;  //when set, EC and relay calls take as long as real hardware
+  ReadingCycle *watched = nullptr;
+  std::vector<CycleStatus> statusDuringHardware;
+  unsigned long powerOnAt = 0;
+  unsigned long firstSampleAt = 0;
+
+  void spendTime(unsigned long duration) {
+    if (clock) {
+      *clock += duration;
+    }
+    if (watched) {
+      statusDuringHardware.push_back(watched->status());
+    }
+  }
 
   float readTemperature() override { return 68; }
-  float readEc() override { return 400; }
-  float readPhAdc() override { return adcSamples[nextSample++ % adcSamples.size()]; }
-  void setPhPower(bool on) override { phPower = on; }
+  float readEc() override {
+    spendTime(2000);
+    return 400;
+  }
+  float readPhAdc() override {
+    if (nextSample == 0 && clock) {
+      firstSampleAt = *clock;
+    }
+    return adcSamples[nextSample++ % adcSamples.size()];
+  }
+  void setPhPower(bool on) override {
+    if (on && clock) {
+      powerOnAt = *clock;
+    }
+    phPower = on;
+    spendTime(500);
+  }
   std::string timestamp() override { return "t"; }
   void recordReading(const Reading &reading) override { recorded.push_back(reading); }
   void saveCalibration(float ph4, float ph7) override {
@@ -225,6 +253,52 @@ void wipe_clears_readings_before_restarting() {
   TEST_ASSERT_TRUE(host.restarted);
 }
 
+void scheduled_reading_gets_the_full_warmup_after_slow_ec_read() {
+  FakeHost host;
+  unsigned long now = 0;
+  host.clock = &now;
+  ReadingCycle cycle(host, 2368, 1880, interval, holdTimeout);
+
+  run(cycle, now, oneMeasurement + 3000);
+
+  TEST_ASSERT_EQUAL_INT(1, host.recorded.size());
+  TEST_ASSERT_GREATER_OR_EQUAL_UINT32(20000, host.firstSampleAt - host.powerOnAt);
+}
+
+void status_stays_busy_while_a_requested_reading_starts() {
+  FakeHost host;
+  ReadingCycle cycle(host, 2368, 1880, interval, holdTimeout);
+  unsigned long now = 0;
+  run(cycle, now, oneMeasurement);
+  host.watched = &cycle;
+
+  cycle.request(CycleCommand::TakeReading);
+  run(cycle, now, 100);
+
+  TEST_ASSERT_FALSE(host.statusDuringHardware.empty());
+  for (CycleStatus status : host.statusDuringHardware) {
+    TEST_ASSERT_TRUE(status == CycleStatus::Busy);
+  }
+}
+
+void status_stays_busy_while_a_held_measurement_starts() {
+  FakeHost host;
+  ReadingCycle cycle(host, 2368, 1880, interval, holdTimeout);
+  unsigned long now = 0;
+  run(cycle, now, oneMeasurement);
+  cycle.request(CycleCommand::Hold);
+  run(cycle, now, 100);
+  host.watched = &cycle;
+
+  cycle.request(CycleCommand::MeasureManual);
+  run(cycle, now, 300);
+
+  TEST_ASSERT_FALSE(host.statusDuringHardware.empty());
+  for (CycleStatus status : host.statusDuringHardware) {
+    TEST_ASSERT_TRUE(status == CycleStatus::Busy);
+  }
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(boot_takes_a_first_reading_and_records_it_complete);
@@ -240,5 +314,8 @@ int main() {
   RUN_TEST(manual_measurement_is_reported_but_not_recorded);
   RUN_TEST(restart_waits_two_seconds_for_the_response);
   RUN_TEST(wipe_clears_readings_before_restarting);
+  RUN_TEST(scheduled_reading_gets_the_full_warmup_after_slow_ec_read);
+  RUN_TEST(status_stays_busy_while_a_requested_reading_starts);
+  RUN_TEST(status_stays_busy_while_a_held_measurement_starts);
   return UNITY_END();
 }
