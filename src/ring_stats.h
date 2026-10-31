@@ -13,7 +13,7 @@ public:
   float currentValue = 0;
   bool full = false;
 
-  int size() {
+  int size() const {
     return full ? capacity : index;
   }
 
@@ -42,7 +42,7 @@ public:
     }
   }
 
-  float getOrderedValue(int count) {
+  float getOrderedValue(int count) const {
     if (!full) {
       return arr[count];
     }

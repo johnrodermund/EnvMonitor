@@ -8,8 +8,9 @@
 #include <DS18B20.h>
 #include <Preferences.h>
 #include "time.h"
+#include "src/reading_cycle.h"
+#include "src/reading_log.h"
 #include "src/sensor_math.h"
-#include "src/stats_file.h"
 #include "src/wifi_setup.h"
 
 
@@ -21,7 +22,7 @@ volatile bool wifiSaved = false;
 
 String title = "Server";
 unsigned long interval0 = 300000;  //min between readings 60000 for 1
-const long interval1 = 20000;      //20 seconds warmup before pH read
+const unsigned long holdTimeout = 900000;  //15 min before an abandoned wizard resumes sampling
 
 
 const char *ntpServer = "pool.ntp.org";
@@ -30,24 +31,12 @@ const int daylightOffset_sec = 3600;  //Replace with your daylight offset (secon
 
 DS18B20 ds(10);
 const int relay = 7;
-float ph4 = 2368.;
-float ph7 = 1880.;
-char STATE = 'B';
-char PHSTATE = 'A';
 
 String programlog;
 
-//number of ph samples each reading
-float phadcarray[20];
-int phcount = 0;
-float phstdev, phadc = 0;
- 
+float phstdev = 0;
 
-unsigned long previousTime = 0;
-unsigned long phstarttime = 0;
-
-
-String datetimearray[totalcount];
+ReadingLog<totalcount> readings;
 
 // Webserver
 AsyncWebServer server(80);
@@ -59,35 +48,36 @@ void notFound(AsyncWebServerRequest *request) {
 }
 
 
-class dataset : public RingStats<totalcount> {
+class LittleFsStore {
 
 public:
 
-  String id;
-
-  dataset(String id_in) {
-    id = id_in;
+  std::string read(const char *path) {
+    return readFile(path).c_str();
   }
 
-  void saveDataset() {
-    String path = "/" + id + ".txt";
-    writeFile(path.c_str(), serializeStats(id.c_str(), *this).c_str());
-  }
-  void restoreDataset() {
-    String path = "/" + id + ".txt";
-    String data = readFile(path.c_str());
-    if (!restoreStats(data.c_str(), *this)) {
-      Serial.println("No valid saved data for " + id);
+  //Written to a temporary file first so a power cut leaves the last good save
+  void write(const char *path, const std::string &text) {
+    const char *tempPath = "/readings.tmp";
+    File file = LittleFS.open(tempPath, "w");
+    if (!file) {
+      Serial.println("Failed to open file for writing");
+      return;
+    }
+    size_t written = file.print(text.c_str());
+    file.close();
+    if (written != text.length()) {
+      Serial.println("Write failed");
+      return;
+    }
+    if (!LittleFS.rename(tempPath, path)) {
+      LittleFS.remove(path);
+      LittleFS.rename(tempPath, path);
     }
   }
 };
 
-dataset phdata("phdata");
-dataset ecdata("ecdata");
-dataset wtdata("wtdata");
-
-
-
+LittleFsStore readingStore;
 
 String getDateTime() {
 
@@ -102,145 +92,7 @@ String getDateTime() {
   return timeStringBuff;
 }
 
-void saveDateTime() {
-  String ptr;
-  for (int i = 0; i < phdata.size(); i++) {
-    ptr += datetimearray[i];
-    ptr += " |";
-  }
-
-  writeFile("/datetime.txt", ptr.c_str());
-}
-
-void restoreDateTime() {
-  String data0 = readFile("/datetime.txt");
-  char data[data0.length() + 1];
-  strcpy(data, data0.c_str());
-  int n;
-  char *p = data;
-  char str[50];
-
-  for (int i = 0; sscanf(p, "%s |%n", &str, &n) == 1; p += n, i++) {
-    datetimearray[i] = str;
-  }
-}
-
-
-String getarrayprint(int size) {
-  String arrayptr;
-  arrayptr += "[";
-  for (int i = 0; i < size; i++) {
-    arrayptr += "[new Date(";
-    arrayptr += datetimearray[(phdata.index + i) % size];
-    arrayptr += "),";
-    arrayptr += String(phdata.getOrderedValue(i));
-    arrayptr += ",";
-    arrayptr += String(ecdata.getOrderedValue(i));
-    arrayptr += ",";
-    arrayptr += String(wtdata.getOrderedValue(i));
-    arrayptr += "]";
-    arrayptr += ",\n";
-  }
-  arrayptr += "]";
-  return arrayptr;
-}
-
-
-
-
-
-float getStandardDeviation(float *sdarray, int sdarraysize, float sdmean) {
-
-  float stdevtemp = 0;
-
-  for (int i = 0; i < sdarraysize; i++) {
-    stdevtemp += ((sdmean - sdarray[i]) * (sdmean - sdarray[i]));
-  }
-  stdevtemp = stdevtemp / sdarraysize;
-  stdevtemp = sqrt(stdevtemp);
-  return stdevtemp;
-}
-
-void calibrateph() {
-  getphadc();
-  if (PHSTATE == 'D') {
-    if (STATE == 'F') {
-      ph4 = phadc;
-      PHSTATE = 'A';
-      STATE = 'W';
-
-    } else {
-      ph7 = phadc;
-      PHSTATE = 'A';
-      STATE = 'A';
-
-    }
-  }
-}
-
-void takeph() {
-  getphadc();
-  if (PHSTATE == 'D') {
-    float ph = phFromAdc(phadc, ph4, ph7);
-
-    datetimearray[phdata.index] = getDateTime();
-    phdata.updatedata(ph);
-    saveAllData();
-
-    float phadcstdev = getStandardDeviation(phadcarray, 20, phadc);
-    phstdev = ph - phFromAdc(phadc + phadcstdev, ph4, ph7);
-    PHSTATE = 'A';
-    STATE = 'A';
-  }
-}
-
-
-void getphadc() {
-  const long currentphtime = millis();
-
-  switch (PHSTATE) {
-    case 'A':
-      digitalWrite(relay, HIGH);
-      delay(500);
-      phstarttime = currentphtime;
-      PHSTATE = 'B';
-      break;
-
-    case 'B':
-      if (currentphtime - phstarttime > interval1) {
-        PHSTATE = 'C';
-      }
-      break;
-
-    case 'C':
-      if (phcount < 20) {
-        phadcarray[phcount] = analogRead(0);
-        phcount++;
-      } else {
-        digitalWrite(relay, LOW);
-        delay(500);
-        phadc = 0;
-        for (int i = 0; i < 20; i++) {
-          phadc += phadcarray[i];
-        }
-        phcount = 0;
-        phadc = phadc / 20;
-        PHSTATE = 'D';
-      }
-      break;
-  }
-}
-
-void resetState() {
-  STATE = 'A';
-  PHSTATE = 'A';
-  previousTime = millis();
-  phstarttime = 0;
-  digitalWrite(relay, LOW);
-}
-
 float takeec() {
-  digitalWrite(relay, LOW);
   float ecadc = 0;
   for (int i = 0; i < 20; i++) {
     delay(100);
@@ -287,6 +139,55 @@ void writeFile(const char *path, const char *message) {
 }
 //LittleFS above here
 
+class DeviceHost : public CycleHost {
+
+public:
+
+  float readTemperature() override {
+    return ds.getTempF();
+  }
+
+  float readEc() override {
+    return takeec();
+  }
+
+  float readPhAdc() override {
+    return analogRead(0);
+  }
+
+  void setPhPower(bool on) override {
+    digitalWrite(relay, on ? HIGH : LOW);
+    delay(500);
+  }
+
+  std::string timestamp() override {
+    return getDateTime().c_str();
+  }
+
+  void recordReading(const Reading &reading) override {
+    readings.append(reading.timestamp, reading.ph, reading.ec, reading.wt);
+    phstdev = reading.phUncertainty;
+    readings.save(readingStore);
+  }
+
+  void saveCalibration(float ph4, float ph7) override {
+    writeFile("/ph4.txt", String(ph4).c_str());
+    writeFile("/ph7.txt", String(ph7).c_str());
+  }
+
+  void wipeReadings() override {
+    readings.clear();
+    readings.save(readingStore);
+  }
+
+  void restart() override {
+    ESP.restart();
+  }
+};
+
+DeviceHost deviceHost;
+ReadingCycle cycle(deviceHost, 2368., 1880., interval0, holdTimeout);
+
 String processor(const String &var) {
 
   if (var == "interval0_html")
@@ -296,66 +197,49 @@ String processor(const String &var) {
     return title;
 
   if (var == "ph_html")
-    return String(phdata.currentValue);
+    return String(readings.ph().currentValue);
 
   if (var == "phstd_html")
     return String(phstdev);
 
   if (var == "phmean_html")
-    return String(phdata.mean);
+    return String(readings.ph().mean);
 
   if (var == "phmeanstd_html")
-    return String(sqrt(phdata.sVar));
+    return String(sqrt(readings.ph().sVar));
 
   if (var == "ec_html")
-    return String(ecdata.currentValue);
+    return String(readings.ec().currentValue);
 
   if (var == "ecmean_html")
-    return String(ecdata.mean);
+    return String(readings.ec().mean);
 
   if (var == "ecmeanstd_html")
-    return String(sqrt(ecdata.sVar));
+    return String(sqrt(readings.ec().sVar));
 
   if (var == "wt_html")
-    return String(wtdata.currentValue);
+    return String(readings.wt().currentValue);
 
   if (var == "wtmean_html")
-    return String(wtdata.mean);
+    return String(readings.wt().mean);
 
   if (var == "wtmeanstd_html")
-    return String(sqrt(wtdata.sVar));
+    return String(sqrt(readings.wt().sVar));
 
   if (var == "log_html")
     return programlog;
 
-  if (var == "datatable0_html") {
-    if (!phdata.full) {
-      return getarrayprint(phdata.index);
-    } else {
-      return getarrayprint(totalcount);
-    }
-  }
+  if (var == "datatable0_html")
+    return readings.chartRows().c_str();
 
   return String();
 }
 
-void saveAllData() {
-  phdata.saveDataset();
-  ecdata.saveDataset();
-  wtdata.saveDataset();
-  saveDateTime();
-}
-
 void restoreAllData() {
-  phdata.restoreDataset();
-  ecdata.restoreDataset();
-  wtdata.restoreDataset();
-  restoreDateTime();
+  readings.restore(readingStore);
   //settings variables below
   interval0 = readFile("/interval0.txt").toInt();
   title = readFile("/title.txt");
-  ph4 = readFile("/ph4.txt").toFloat();
-  ph7 = readFile("/ph7.txt").toFloat();
 }
 
 // Serves a Wi-Fi form on an access point, never returns: restarts once credentials
@@ -474,41 +358,37 @@ void setup() {
       inputParam = "interval0";
       inputMessage = inputMessage.toInt() * 60000;
       Serial.println(inputMessage);
-      resetState();
       writeFile("/interval0.txt", inputMessage.c_str());
       interval0 = readFile("/interval0.txt").toInt();
+      cycle.setInterval(interval0);
     }
     if (request->hasParam("title")) {
       String inputMessage = request->getParam("title")->value();
-      resetState();
       writeFile("/title.txt", inputMessage.c_str());
       title = readFile("/title.txt");
     }
     if (request->hasParam("restart")) {
-      resetState();
-      STATE = 'R';
+      cycle.request(CycleCommand::Restart);
       request->redirect("/");
     }
 
     if (request->hasParam("reset")) {
-      resetState();
-      STATE = 'E';
+      cycle.request(CycleCommand::WipeAndRestart);
       request->redirect("/");
     }
     if (request->hasParam("calibrate0")) {
-      resetState();
-      STATE = 'W';
+      cycle.request(CycleCommand::Hold);
      request->send(LittleFS, "/calibrate0.html", "text/html");
     }
 
     if (request->hasParam("calibrate1")) {
-      STATE = 'F';
+      cycle.request(CycleCommand::MeasurePh4);
       request->redirect("/get?calibrate2=");
      }
 
     if (request->hasParam("calibrate2")) {
 
-      if (STATE == 'F') {
+      if (cycle.status() == CycleStatus::Busy) {
      request->send(LittleFS, "/waiting.html", "text/html");
       } else {
      request->send(LittleFS, "/calibrate2.html", "text/html");
@@ -517,45 +397,43 @@ void setup() {
 
 
     if (request->hasParam("calibrate3")) {
-      if (STATE == 'W'){
-        STATE = 'G';
+      if (cycle.status() == CycleStatus::Holding){
+        cycle.request(CycleCommand::MeasurePh7);
       }
-      if (STATE == 'G') {
+      if (cycle.status() == CycleStatus::Busy) {
        request->send(LittleFS, "/waiting.html", "text/html");
       } else {
-        request->send(200, "text/html", "ph4 updated to " + String(ph4) + " and ph7 updated " + "to " + String(ph7) + "<br><a href=\"/\">Return to Home Page</a>");
+        request->send(200, "text/html", "ph4 updated to " + String(cycle.ph4()) + " and ph7 updated " + "to " + String(cycle.ph7()) + "<br><a href=\"/\">Return to Home Page</a>");
       }
     }
 
     if (request->hasParam("takeph0")) {
-      resetState();
-      STATE = 'W';
+      cycle.request(CycleCommand::Hold);
       request->send(200, "text/html", "To take pH reading: Make sure cleaned probe is in the solution to be measured and click to continue.<form action=\"/get\"><button name=\"takeph1\" type=\"submit\">Continue</button></form>");
     }
 
     if (request->hasParam("takeph1")) {
-      STATE = 'H';
+      cycle.request(CycleCommand::MeasureManual);
       request->redirect("/get?takeph2=");
          }
 
     if (request->hasParam("takeph2")) {
-      if (STATE == 'H') {
+      if (cycle.status() == CycleStatus::Busy) {
          request->send(LittleFS, "/waiting.html", "text/html");
       } else {
-        float phmanual = phFromAdc(phadc, ph4, ph7);
-        request->send(200, "text/html", "Current pH is " + String(phmanual) + 
-        "\nCurrent ec is " + String(takeec()) + "\nCurrent water temperature is " + String(ds.getTempF()) + "<br><a href=\"/\">Return to Home Page</a>");
+        const Reading &manual = cycle.manualReading();
+        request->send(200, "text/html", "Current pH is " + String(manual.ph) +
+        "\nCurrent ec is " + String(manual.ec) + "\nCurrent water temperature is " + String(manual.wt) + "<br><a href=\"/\">Return to Home Page</a>");
       }
     }
 
     if (request->hasParam("takenewreading0")) {
-      resetState();
-      STATE = 'B';
+      cycle.request(CycleCommand::TakeReading);
       request->redirect("/get?takenewreading1=");
          }
 
     if (request->hasParam("takenewreading1")) {
-      if (STATE != 'A') {
+      if (cycle.status() != CycleStatus::Idle) {
         request->send(200, "text/html", "<meta http-equiv='refresh' content='10'>Please wait...");
       } else {
         request->redirect("/");
@@ -615,7 +493,8 @@ void setup() {
 
   //reset the interval if it is outside of the range
   if (interval0 < 12000 || interval0 > 720000) { interval0 = 600000; }
-  
+  cycle.configure(readFile("/ph4.txt").toFloat(), readFile("/ph7.txt").toFloat(), interval0);
+
     xTaskCreatePinnedToCore (
     loop2,     // Function to implement the task
     "loop2",   // Name of the task
@@ -641,79 +520,6 @@ void loop() {
 // the loop2 function also runs forver but as a parallel task
 void loop2 (void* pvParameters) {
     while (1) {
-    //Current time in milliseconds
-    unsigned long currentTime = millis();
-
-    switch (STATE) {
-  //Waiting in between readings
-      case 'A':
-        if (currentTime - previousTime > interval0) {
-          STATE = 'B';
-        }
-        break;
-
-  //to take temp and ec
-      case 'B':
-        wtdata.updatedata(ds.getTempF());
-        ecdata.updatedata(takeec());
-
-        STATE = 'C';
-        previousTime = currentTime;
-        break;
-
-  //to take pH
-      case 'C':
-        takeph();
-
-        break;
-
-  //to restart
-      case 'R':
-
-        if (currentTime - previousTime > 2000) {
-          ESP.restart();
-        }
-
-        break;
-
-  //to reset data
-      case 'E':
-        phdata.resetDataset();
-        ecdata.resetDataset();
-        wtdata.resetDataset();
-        saveAllData();
-        STATE = 'R';
-
-        break;
-
-  //to calibrate the probe
-      case 'F':
-        calibrateph();
-        break;
-
-  //to calibrate the probe part2
-      case 'G':
-        calibrateph();
-        if (STATE == 'A') {
-
-          writeFile("/ph4.txt", String(ph4).c_str());
-          writeFile("/ph7.txt", String(ph7).c_str());
-
-        }
-        break;
-
-  //for manual ph readings
-      case 'H':
-        getphadc();
-        if (PHSTATE == 'D') {
-          PHSTATE = 'A';
-          STATE = 'A';
-        }
-        break;
-  //waiting
-      case 'W':
-
-        break;
-    }
+    cycle.tick(millis());
   }
 }

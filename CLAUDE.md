@@ -20,25 +20,23 @@ There's no firmware build config or linter, and the board and library versions a
 Three execution contexts share globals with no locking:
 
 - `loop()` only services OTA.
-- `loop2()`, a FreeRTOS task on core 0, runs the `STATE` machine and does all sensor work.
-- `AsyncWebServer` handlers change behaviour by writing `STATE` and `PHSTATE`. `loop2` then acts on them. Keep slow work out of handlers.
+- `loop2()`, a FreeRTOS task on core 0, calls `ReadingCycle::tick()`, which does all sensor work.
+- `AsyncWebServer` handlers use only `request()`, `status()` and `setInterval()` on the cycle. Keep slow work out of handlers. The dashboard still reads `ReadingLog` from a handler with no lock while the task appends.
 
-`STATE` values: `A` idle until `interval0`, `B` read temperature and EC, `C` read pH then save, `F`/`G` calibrate pH 4 / pH 7, `H` manual pH, `R` restart, `E` wipe data then restart, `W` hold with no sampling. `PHSTATE` is the nested pH sequence: `A` relay on, `B` 20 s warmup, `C` take 20 ADC samples, `D` done. The relay is on only during pH sampling, and EC is read with it off.
+`ReadingCycle` in `src/reading_cycle.h` owns every reading, calibration and restart transition. Its `CycleHost` interface has two adapters: `DeviceHost` in the sketch and `FakeHost` in the tests. A new command interrupts whatever is running, and an interrupted reading records nothing. The relay is on only during pH warmup and sampling, and EC is read with it off. Wizards hold sampling, and a hold abandoned for 15 minutes resumes it and discards any unfinished calibration.
 
-`/get` is the single endpoint for settings and multi-page wizards, dispatched on which query parameter is present. Wizard pages (`calibrate*.html`, `waiting.html`) move forward by form submits to `/get`, and `waiting.html` polls until `STATE` changes.
+`/get` is the single endpoint for settings and multi-page wizards, dispatched on which query parameter is present. Wizard pages (`calibrate*.html`, `waiting.html`) move forward by form submits to `/get`, and `waiting.html` polls until the cycle stops being busy.
 
-Data flow: `RingStats` in `src/ring_stats.h` is a ring buffer with running mean and variance, and `src/stats_file.h` defines its file format, rejecting empty or corrupt files so boot starts empty. The sketch's `dataset` class ties these together for 200 entries. `phdata`, `ecdata`, `wtdata` and `datetimearray` are parallel, and timestamps are indexed by `phdata.index`, so all of them must advance together. `saveAllData()` writes `/<id>.txt` and `/datetime.txt`, and `restoreAllData()` reads them plus the settings files at boot.
+`ReadingLog` in `src/reading_log.h` takes one complete reading at a time, so its series stay aligned, and it saves all 200 entries to `/readings.txt` through a store adapter. Boot replays that file's rows to rebuild statistics. If the file is missing, it migrates the old `/phdata.txt`, `/ecdata.txt`, `/wtdata.txt` and `/datetime.txt` files, which is the only remaining use of `src/stats_file.h`.
 
 Templating: `processor()` fills `%name_html%` placeholders in `index.html`, `index.js` and `update.html`, so a literal `%` in those files must be written `%%`. `%datatable0_html%` expands to a JS array literal of `new Date(...)` rows. That is why `getDateTime()` formats the month as the text `%m-1`, which the browser evaluates. Charts load from gstatic, so the viewing browser needs internet access.
 
 ## Gotchas
 
 - Every `/get` request reaches the final `request->redirect("/")`, even after an earlier `send()`. The trailing `else` covers only `takenewreading1`. Check this when changing wizard responses.
-- `W` stops sampling. Abandoning a calibrate or `takeph` wizard leaves the device idle until something else sets `STATE`.
 - `setup()` resets `interval0` to 10 minutes if it's outside 12000–720000 ms, so a setting above 12 minutes is lost on reboot.
-- `writeFile()` blocks for 2 s per file, so `saveAllData()` stalls `loop2` for at least 8 s.
+- `writeFile()` blocks for 2 s per file. It's used for settings; readings go through `LittleFsStore`.
 - If `LittleFS.begin()` fails, `setup()` returns early, leaving no web server, OTA or sampling task.
 - `ph4` and `ph7` hold raw ADC readings for the two-point calibration, not pH values.
-- `restoreDateTime()` has no bounds check, and a reading taken before NTP sync saves an empty timestamp that shifts every later entry on restore.
 - NTP settings and UTC offset are hardcoded at the top of the sketch.
 - Wi-Fi credentials live in NVS (`Preferences` namespace `wifi`), not in source or `data/`. With none saved, or if the saved network fails at boot, `runWifiSetupPortal()` opens the `EnvMonitor-Setup` access point at 192.168.4.1. It restarts after a save, or after 5 minutes if a network is saved. No sampling or OTA runs during the portal.
