@@ -29,8 +29,8 @@ const char *ntpServer = "pool.ntp.org";
 const long gmtOffset_sec = -18000;    //Replace with your GMT offset (seconds)
 const int daylightOffset_sec = 3600;  //Replace with your daylight offset (seconds)
 
-DS18B20 ds(10);
-const int relay = 7;
+DS18B20 ds(8);
+const int relay = 1;
 
 String programlog;
 
@@ -96,7 +96,7 @@ float takeec() {
   float ecadc = 0;
   for (int i = 0; i < 20; i++) {
     delay(100);
-    ecadc += analogRead(1);
+    ecadc += analogRead(0);  //same input as pH, the relay selects which sensor is powered
   }
   ecadc = ecadc / 20.0;
   return ecFromAdc(ecadc);
