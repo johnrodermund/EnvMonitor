@@ -6,7 +6,7 @@ ESP32-C3 firmware that logs pH, electrical conductivity (EC) and water temperatu
 
 | Signal | GPIO |
 |---|---|
-| pH and EC analog output (shared) | 0 |
+| pH and EC analog output (shared), in the D1 mini A0 position | 3 |
 | Relay: on powers the pH sensor, off powers the EC sensor | 1 |
 | DS18B20 temperature sensor | 8 |
 

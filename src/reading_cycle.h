@@ -80,6 +80,19 @@ public:
     return manual;
   }
 
+  //Raw ADC from the last finished pH measurement of any kind, for diagnostics
+  float lastPhAdc() const {
+    return lastAdc;
+  }
+
+  int lastPhSampleCount() const {
+    return lastCount;
+  }
+
+  float lastPhSample(int index) const {
+    return lastSamples[index];
+  }
+
   void tick(unsigned long now) {
     //Commands can spend seconds on hardware, the next tick brings a fresh now
     if (applyCommand(now)) {
@@ -115,8 +128,12 @@ public:
 
       case Phase::Sampling:
         if (sampleCount < sampleTotal) {
-          samples[sampleCount] = host.readPhAdc();
-          sampleCount++;
+          //Back-to-back reads drain the ADC's sample capacitor and read low
+          if (sampleCount == 0 || now - lastSampleAt >= sampleSpacing) {
+            samples[sampleCount] = host.readPhAdc();
+            sampleCount++;
+            lastSampleAt = now;
+          }
         } else {
           host.setPhPower(false);
           finishMeasurement(now);
@@ -138,6 +155,7 @@ private:
 
   static const int sampleTotal = 20;
   static const unsigned long warmupTime = 20000;
+  static const unsigned long sampleSpacing = 100;
   static const unsigned long restartDelay = 2000;
 
   CycleHost &host;
@@ -154,6 +172,10 @@ private:
   Reading manual;
   float samples[sampleTotal];
   int sampleCount = 0;
+  unsigned long lastSampleAt = 0;
+  float lastSamples[sampleTotal] = {};
+  int lastCount = 0;
+  float lastAdc = 0;
   unsigned long lastReadingStart = 0;
   unsigned long warmupStart = 0;
   unsigned long holdStart = 0;
@@ -239,6 +261,11 @@ private:
       phAdc += samples[i];
     }
     phAdc = phAdc / sampleTotal;
+    for (int i = 0; i < sampleTotal; i++) {
+      lastSamples[i] = samples[i];
+    }
+    lastCount = sampleTotal;
+    lastAdc = phAdc;
 
     switch (job) {
       case Job::Reading:

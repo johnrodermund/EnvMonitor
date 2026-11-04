@@ -10,7 +10,7 @@ Run tests on the host with `pio test -e native` (add `-f test_ring_stats` for on
 
 There's no firmware build config or linter, and the board and library versions aren't recorded. Compile with the Arduino toolchain for ESP32. The device has run a build for `lolin_c3_mini` (Arduino core 2.0.14; the board itself is an unconfirmed guess, only the ESP32-C3 chip is certain) with flags `-DARDUINO_USB_MODE=1 -DARDUINO_USB_CDC_ON_BOOT=1`, and libraries `mathieucarbou/ESPAsyncWebServer`, `matmunk/DS18B20` and `paulstoffregen/OneWire`.
 
-Pinout: DS18B20 on GPIO 8, relay on GPIO 1, pH and EC on GPIO 0.
+Pinout: DS18B20 on GPIO 8, relay on GPIO 1, pH and EC on GPIO 3 (`sensorPin`). The box was laid out for a D1 mini, so GPIO 3 sits in its A0 position; GPIO 0 is unconnected. Code must not use `A0`, which means GPIO 0 on this board.
 
 - The sketch name doesn't match its folder (`EnvMonitor`). Arduino tools require them to match, so copy or rename before compiling.
 - A firmware upload and a LittleFS upload of `data/` are separate steps. Both are also possible over ArduinoOTA.
@@ -25,7 +25,7 @@ Three execution contexts share globals with no locking:
 - `loop2()`, a FreeRTOS task on core 0, calls `ReadingCycle::tick()`, which does all sensor work.
 - `AsyncWebServer` handlers use only `request()`, `status()` and `setInterval()` on the cycle. Keep slow work out of handlers. The dashboard still reads `ReadingLog` from a handler with no lock while the task appends.
 
-`ReadingCycle` in `src/reading_cycle.h` owns every reading, calibration and restart transition. Its `CycleHost` interface has two adapters: `DeviceHost` in the sketch and `FakeHost` in the tests. A new command interrupts whatever is running, and an interrupted reading records nothing. pH and EC share one analog input (GPIO 0), and the relay selects which sensor is powered: on for pH during warmup and sampling, off for EC. Wizards hold sampling, and a hold abandoned for 15 minutes resumes it and discards any unfinished calibration.
+`ReadingCycle` in `src/reading_cycle.h` owns every reading, calibration and restart transition. Its `CycleHost` interface has two adapters: `DeviceHost` in the sketch and `FakeHost` in the tests. A new command interrupts whatever is running, and an interrupted reading records nothing. pH and EC share one analog input (GPIO 3), and the relay selects which sensor is powered: on for pH during warmup and sampling, off for EC. Wizards hold sampling, and a hold abandoned for 15 minutes resumes it and discards any unfinished calibration.
 
 `/get` is the single endpoint for settings and multi-page wizards, dispatched on which query parameter is present. Wizard pages (`calibrate*.html`, `waiting.html`) move forward by form submits to `/get`, and `waiting.html` polls until the cycle stops being busy.
 

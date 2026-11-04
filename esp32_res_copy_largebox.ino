@@ -31,10 +31,21 @@ const int daylightOffset_sec = 3600;  //Replace with your daylight offset (secon
 
 DS18B20 ds(8);
 const int relay = 1;
+const int sensorPin = 3;  //pH and EC share this input, in the D1 mini A0 position
 
 String programlog;
 
 float phstdev = 0;
+
+enum class SettleStep { Idle, Holding, EcState, PhState };
+volatile bool settleRequested = false;
+SettleStep settleStep = SettleStep::Idle;
+String settleLog;
+unsigned long settleStart = 0;
+unsigned long lastSettleRead = 0;
+const unsigned long settleEcTime = 10000;
+const unsigned long settlePhTime = 90000;
+const int settlePins[] = { 0, 2, 3, 4, 5 };  //every free analog pin; GPIO 1 drives the relay
 
 ReadingLog<totalcount> readings;
 
@@ -92,13 +103,16 @@ String getDateTime() {
   return timeStringBuff;
 }
 
+float lastEcAdc = 0;
+
 float takeec() {
   float ecadc = 0;
   for (int i = 0; i < 20; i++) {
     delay(100);
-    ecadc += analogRead(0);  //same input as pH, the relay selects which sensor is powered
+    ecadc += analogRead(sensorPin);  //same input as pH, the relay selects which sensor is powered
   }
   ecadc = ecadc / 20.0;
+  lastEcAdc = ecadc;
   return ecFromAdc(ecadc);
 }
 
@@ -152,7 +166,7 @@ public:
   }
 
   float readPhAdc() override {
-    return analogRead(0);
+    return analogRead(sensorPin);
   }
 
   void setPhPower(bool on) override {
@@ -343,6 +357,26 @@ void setup() {
   });
 
   // Route for update
+  // Raw sensor values for troubleshooting
+  server.on("/diag", HTTP_GET, [](AsyncWebServerRequest *request) {
+    String text = "calibration ph4=" + String(cycle.ph4()) + " ph7=" + String(cycle.ph7()) + "\n";
+    text += "last pH adc average=" + String(cycle.lastPhAdc()) + "\nlast pH samples:";
+    for (int i = 0; i < cycle.lastPhSampleCount(); i++) {
+      text += " " + String(cycle.lastPhSample(i), 0);
+    }
+    text += "\nlast EC adc average=" + String(lastEcAdc) + "\n";
+    text += "now relay=" + String(digitalRead(relay)) + " sensor back-to-back:";
+    for (int i = 0; i < 10; i++) {
+      text += " " + String(analogRead(sensorPin));
+    }
+    text += " (" + String(analogReadMilliVolts(sensorPin)) + " mV)\n";
+    if (request->hasParam("settle")) {
+      settleRequested = true;
+    }
+    text += settleLog;
+    request->send(200, "text/plain", text);
+  });
+
   server.on("/update.html", HTTP_GET, [](AsyncWebServerRequest *request) {
     request->send(LittleFS, "/update.html", "text/html", false, processor);
   });
@@ -512,9 +546,65 @@ void setup() {
 
 
 
+// Settle test, started from /diag?settle=: holds sampling, powers EC for a while,
+// switches to pH and logs the analog pins so the warmup the pH probe needs can be read off
+void logSettleRead(unsigned long now, long sincePhSwitch) {
+  if (now - lastSettleRead >= 500) {
+    lastSettleRead = now;
+    settleLog += String(sincePhSwitch);
+    for (int pin : settlePins) {
+      settleLog += " " + String(analogRead(pin));
+    }
+    settleLog += "\n";
+  }
+}
+
+void runSettleTest() {
+  unsigned long now = millis();
+  switch (settleStep) {
+    case SettleStep::Idle:
+      if (settleRequested) {
+        settleRequested = false;
+        settleLog = "settle test starting\n";
+        cycle.request(CycleCommand::Hold);
+        settleStep = SettleStep::Holding;
+      }
+      break;
+
+    case SettleStep::Holding:
+      if (cycle.status() == CycleStatus::Holding) {
+        digitalWrite(relay, LOW);
+        settleStart = now;
+        lastSettleRead = 0;
+        settleLog = "ms_since_ph_switch GPIO0 GPIO2 GPIO3 GPIO4 GPIO5\n";
+        settleStep = SettleStep::EcState;
+      }
+      break;
+
+    case SettleStep::EcState:
+      logSettleRead(now, (long)(now - settleStart) - (long)settleEcTime);
+      if (now - settleStart >= settleEcTime) {
+        digitalWrite(relay, HIGH);
+        settleStart = now;
+        settleStep = SettleStep::PhState;
+      }
+      break;
+
+    case SettleStep::PhState:
+      logSettleRead(now, now - settleStart);
+      if (now - settleStart >= settlePhTime) {
+        digitalWrite(relay, LOW);
+        settleLog += "done\n";
+        cycle.request(CycleCommand::TakeReading);
+        settleStep = SettleStep::Idle;
+      }
+      break;
+  }
+}
+
 void loop() {
   ArduinoOTA.handle();
-
+  runSettleTest();
 }
 
 // the loop2 function also runs forver but as a parallel task

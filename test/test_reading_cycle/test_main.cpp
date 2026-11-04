@@ -20,6 +20,7 @@ struct FakeHost : CycleHost {
   std::vector<CycleStatus> statusDuringHardware;
   unsigned long powerOnAt = 0;
   unsigned long firstSampleAt = 0;
+  std::vector<unsigned long> sampleTimes;
 
   void spendTime(unsigned long duration) {
     if (clock) {
@@ -38,6 +39,9 @@ struct FakeHost : CycleHost {
   float readPhAdc() override {
     if (nextSample == 0 && clock) {
       firstSampleAt = *clock;
+    }
+    if (clock) {
+      sampleTimes.push_back(*clock);
     }
     return adcSamples[nextSample++ % adcSamples.size()];
   }
@@ -58,11 +62,11 @@ struct FakeHost : CycleHost {
   void restart() override { restarted = true; }
 };
 
-void run(ReadingCycle &cycle, unsigned long &now, unsigned long duration) {
+void run(ReadingCycle &cycle, unsigned long &now, unsigned long duration, unsigned long step = 100) {
   unsigned long end = now + duration;
   while (now < end) {
     cycle.tick(now);
-    now += 100;
+    now += step;
   }
 }
 
@@ -299,6 +303,34 @@ void status_stays_busy_while_a_held_measurement_starts() {
   }
 }
 
+void last_ph_samples_and_average_are_kept_for_diagnostics() {
+  FakeHost host;
+  host.adcSamples = {2100, 2148};
+  ReadingCycle cycle(host, 2368, 1880, interval, holdTimeout);
+  unsigned long now = 0;
+
+  run(cycle, now, oneMeasurement);
+
+  TEST_ASSERT_EQUAL_FLOAT(2124, cycle.lastPhAdc());
+  TEST_ASSERT_EQUAL_INT(20, cycle.lastPhSampleCount());
+  TEST_ASSERT_EQUAL_FLOAT(2100, cycle.lastPhSample(0));
+  TEST_ASSERT_EQUAL_FLOAT(2148, cycle.lastPhSample(1));
+}
+
+void ph_samples_are_spaced_so_the_adc_can_recover() {
+  FakeHost host;
+  unsigned long now = 0;
+  host.clock = &now;
+  ReadingCycle cycle(host, 2368, 1880, interval, holdTimeout);
+
+  run(cycle, now, oneMeasurement + 3000, 10);
+
+  TEST_ASSERT_EQUAL_INT(20, host.sampleTimes.size());
+  for (size_t i = 1; i < host.sampleTimes.size(); i++) {
+    TEST_ASSERT_GREATER_OR_EQUAL_UINT32(100, host.sampleTimes[i] - host.sampleTimes[i - 1]);
+  }
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(boot_takes_a_first_reading_and_records_it_complete);
@@ -317,5 +349,7 @@ int main() {
   RUN_TEST(scheduled_reading_gets_the_full_warmup_after_slow_ec_read);
   RUN_TEST(status_stays_busy_while_a_requested_reading_starts);
   RUN_TEST(status_stays_busy_while_a_held_measurement_starts);
+  RUN_TEST(last_ph_samples_and_average_are_kept_for_diagnostics);
+  RUN_TEST(ph_samples_are_spaced_so_the_adc_can_recover);
   return UNITY_END();
 }
