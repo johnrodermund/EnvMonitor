@@ -21,8 +21,8 @@ Pinout: DS18B20 on GPIO 8, relay on GPIO 1, pH and EC on GPIO 3 (`sensorPin`). T
 
 Three execution contexts share globals with no locking:
 
-- `loop()` only services OTA.
-- `loop2()`, a FreeRTOS task on core 0, calls `ReadingCycle::tick()`, which does all sensor work.
+- `loop()` services OTA, the settle test and the readings API upload, then yields with `delay(2)`. The ESP32-C3 has one core and `loop()` runs at a higher priority than `loop2()`, so without that yield sampling starves and a reading takes minutes.
+- `loop2()`, a FreeRTOS task, calls `ReadingCycle::tick()`, which does all sensor work.
 - `AsyncWebServer` handlers use only `request()`, `status()` and `setInterval()` on the cycle. Keep slow work out of handlers. The dashboard still reads `ReadingLog` from a handler with no lock while the task appends.
 
 `ReadingCycle` in `src/reading_cycle.h` owns every reading, calibration and restart transition. Its `CycleHost` interface has two adapters: `DeviceHost` in the sketch and `FakeHost` in the tests. A new command interrupts whatever is running, and an interrupted reading records nothing. pH and EC share one analog input (GPIO 3), and the relay selects which sensor is powered: on for pH during warmup and sampling, off for EC. Wizards hold sampling, and a hold abandoned for 15 minutes resumes it and discards any unfinished calibration.
@@ -30,6 +30,8 @@ Three execution contexts share globals with no locking:
 `/get` is the single endpoint for settings and multi-page wizards, dispatched on which query parameter is present. Wizard pages (`calibrate*.html`, `waiting.html`) move forward by form submits to `/get`, and `waiting.html` polls until the cycle stops being busy.
 
 `ReadingLog` in `src/reading_log.h` takes one complete reading at a time, so its series stay aligned, and it saves all 200 entries to `/readings.txt` through a store adapter. Boot replays that file's rows to rebuild statistics. If the file is missing, it migrates the old `/phdata.txt`, `/ecdata.txt`, `/wtdata.txt` and `/datetime.txt` files, which is the only remaining use of `src/stats_file.h`.
+
+Readings API upload: `DeviceHost::recordReading()` only queues each finished reading in `apiQueue` (`ReadingQueue` in `src/reading_queue.h`, 24 entries, under `apiQueueLock`). `sendQueuedReading()` in `loop()` POSTs the oldest one as JSON to `<url>/readings`, with 3 s timeouts and a 10 s to 5 min backoff. A 200 or 201 removes it, a 400 or 422 drops it as never acceptable, and anything else keeps it for a retry. When full, the queue drops its oldest reading. Readings taken before NTP sync aren't queued, because their timestamp would be wrong. The URL, token and device name live in NVS (`Preferences` namespace `api`), set by a POST to `/apiconfig` (form fields `url`, `token`, `device`). A GET of `/apiconfig`, or `/diag`, shows the status but never the token. The API itself runs on the Raspberry Pi and isn't in this repo.
 
 Templating: `processor()` fills `%name_html%` placeholders in `index.html`, `index.js` and `update.html`, so a literal `%` in those files must be written `%%`. `%datatable0_html%` expands to a JS array literal of `new Date(...)` rows. That is why `getDateTime()` formats the month as the text `%m-1`, which the browser evaluates. Charts load from gstatic, so the viewing browser needs internet access.
 

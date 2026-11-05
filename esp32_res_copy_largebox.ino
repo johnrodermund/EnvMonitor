@@ -7,9 +7,11 @@
 #include <ArduinoOTA.h>
 #include <DS18B20.h>
 #include <Preferences.h>
+#include <HTTPClient.h>
 #include "time.h"
 #include "src/reading_cycle.h"
 #include "src/reading_log.h"
+#include "src/reading_queue.h"
 #include "src/sensor_math.h"
 #include "src/wifi_setup.h"
 
@@ -48,6 +50,21 @@ const unsigned long settlePhTime = 90000;
 const int settlePins[] = { 0, 2, 3, 4, 5 };  //every free analog pin; GPIO 1 drives the relay
 
 ReadingLog<totalcount> readings;
+
+// Readings API on the LAN: finished readings are queued by the sampling task and sent from loop().
+// The URL, token and device name live in NVS (Preferences namespace "api"), set through /apiconfig.
+ReadingQueue<24> apiQueue;  //4 hours at a 10 min interval
+SemaphoreHandle_t apiQueueLock;
+String apiUrl;
+String apiToken;
+String apiDevice;
+volatile bool apiConfigChanged = true;
+int apiFailures = 0;
+unsigned long apiNextAttempt = 0;
+int apiLastCode = 0;
+unsigned long apiDelivered = 0;
+unsigned long apiRejected = 0;
+unsigned long apiNoClock = 0;
 
 // Webserver
 AsyncWebServer server(80);
@@ -153,6 +170,9 @@ void writeFile(const char *path, const char *message) {
 }
 //LittleFS above here
 
+class ReadingCycle;
+extern ReadingCycle cycle;
+
 class DeviceHost : public CycleHost {
 
 public:
@@ -182,6 +202,26 @@ public:
     readings.append(reading.timestamp, reading.ph, reading.ec, reading.wt);
     phstdev = reading.phUncertainty;
     readings.save(readingStore);
+    queueForApi(reading);
+  }
+
+  //Only queues; loop() does the network call so sampling never waits on the API
+  void queueForApi(const Reading &reading) {
+    QueuedReading queued;
+    queued.epoch = time(nullptr);
+    if (!clockIsSet(queued.epoch)) {
+      apiNoClock++;
+      return;
+    }
+    queued.ph = reading.ph;
+    queued.phUncertainty = reading.phUncertainty;
+    queued.phAdc = cycle.lastPhAdc();
+    queued.ec = reading.ec;
+    queued.ecAdc = lastEcAdc;
+    queued.wt = reading.wt;
+    xSemaphoreTake(apiQueueLock, portMAX_DELAY);
+    apiQueue.push(queued);
+    xSemaphoreGive(apiQueueLock);
   }
 
   void saveCalibration(float ph4, float ph7) override {
@@ -201,6 +241,81 @@ public:
 
 DeviceHost deviceHost;
 ReadingCycle cycle(deviceHost, 2368., 1880., interval0, holdTimeout);
+
+void loadApiConfig() {
+  Preferences apiPrefs;
+  apiPrefs.begin("api", true);
+  apiUrl = apiPrefs.getString("url", "");
+  apiToken = apiPrefs.getString("token", "");
+  apiDevice = apiPrefs.getString("device", "envmonitor-1");
+  apiPrefs.end();
+}
+
+String apiStatus() {
+  xSemaphoreTake(apiQueueLock, portMAX_DELAY);
+  int queued = apiQueue.size();
+  int dropped = apiQueue.dropped();
+  xSemaphoreGive(apiQueueLock);
+  return "api url=" + (apiUrl.length() ? apiUrl : String("(not set)")) + " token=" + (apiToken.length() ? "set" : "not set") +
+         " device=" + apiDevice + "\napi queued=" + String(queued) + " delivered=" + String(apiDelivered) +
+         " rejected=" + String(apiRejected) + " dropped=" + String(dropped) + " skipped_no_clock=" + String(apiNoClock) +
+         " last_http=" + String(apiLastCode) + " failures=" + String(apiFailures) + "\n";
+}
+
+//Sends the oldest queued reading, one per call, backing off while the API is unreachable
+void sendQueuedReading() {
+  if (apiConfigChanged) {
+    apiConfigChanged = false;
+    loadApiConfig();
+    apiFailures = 0;
+    apiNextAttempt = 0;
+  }
+  if (apiUrl.length() == 0 || apiToken.length() == 0 || WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+  if (apiNextAttempt != 0 && (long)(millis() - apiNextAttempt) < 0) {
+    return;
+  }
+  xSemaphoreTake(apiQueueLock, portMAX_DELAY);
+  bool empty = apiQueue.size() == 0;
+  QueuedReading reading;
+  if (!empty) {
+    reading = apiQueue.front();
+  }
+  xSemaphoreGive(apiQueueLock);
+  if (empty) {
+    return;
+  }
+
+  HTTPClient http;
+  http.setConnectTimeout(3000);
+  http.setTimeout(3000);
+  http.begin(apiUrl + "/readings");
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("Authorization", "Bearer " + apiToken);
+  apiLastCode = http.POST(readingJson(apiDevice.c_str(), reading).c_str());
+  http.end();
+
+  SendOutcome outcome = outcomeFor(apiLastCode);
+  if (outcome == SendOutcome::RetryLater) {
+    apiFailures++;
+    apiNextAttempt = millis() + retryDelayMs(apiFailures);
+    return;
+  }
+  if (outcome == SendOutcome::Delivered) {
+    apiDelivered++;
+  } else {
+    apiRejected++;
+  }
+  apiFailures = 0;
+  apiNextAttempt = 0;
+  xSemaphoreTake(apiQueueLock, portMAX_DELAY);
+  //The queue may have dropped this reading while it was being sent, if it filled up meanwhile
+  if (apiQueue.size() > 0 && apiQueue.front().epoch == reading.epoch) {
+    apiQueue.pop();
+  }
+  xSemaphoreGive(apiQueueLock);
+}
 
 String processor(const String &var) {
 
@@ -304,6 +419,7 @@ void runWifiSetupPortal(bool hasSavedNetwork) {
 }
 
 void setup() {
+  apiQueueLock = xSemaphoreCreateMutex();
   Serial.begin(115200);
 
   Serial.println("Starting the LittleFS Webserver..");
@@ -373,8 +489,41 @@ void setup() {
     if (request->hasParam("settle")) {
       settleRequested = true;
     }
+    text += apiStatus();
     text += settleLog;
     request->send(200, "text/plain", text);
+  });
+
+  // Readings API settings, stored in NVS. GET shows the status, POST saves url, token and device.
+  // The token is never shown back.
+  server.on("/apiconfig", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send(200, "text/plain", apiStatus());
+  });
+
+  server.on("/apiconfig", HTTP_POST, [](AsyncWebServerRequest *request) {
+    Preferences apiPrefs;
+    apiPrefs.begin("api", false);
+    if (request->hasParam("url", true)) {
+      String url = request->getParam("url", true)->value();
+      while (url.endsWith("/")) {
+        url.remove(url.length() - 1);
+      }
+      if (url.length() && !url.startsWith("http://")) {
+        apiPrefs.end();
+        request->send(400, "text/plain", "url must start with http://");
+        return;
+      }
+      apiPrefs.putString("url", url);
+    }
+    if (request->hasParam("token", true)) {
+      apiPrefs.putString("token", request->getParam("token", true)->value());
+    }
+    if (request->hasParam("device", true) && request->getParam("device", true)->value().length()) {
+      apiPrefs.putString("device", request->getParam("device", true)->value());
+    }
+    apiPrefs.end();
+    apiConfigChanged = true;
+    request->send(200, "text/plain", "saved\n");
   });
 
   server.on("/update.html", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -605,6 +754,8 @@ void runSettleTest() {
 void loop() {
   ArduinoOTA.handle();
   runSettleTest();
+  sendQueuedReading();
+  delay(2);  //single core: loop() outranks loop2, so it must yield or sampling starves
 }
 
 // the loop2 function also runs forver but as a parallel task

@@ -44,6 +44,16 @@ Firmware updates can then go over the network with ArduinoOTA.
 
 Calibrate pH from Settings with pH 4 and pH 7 buffer solutions. A reading takes about 25 seconds because the pH sensor warms up for 20.
 
+## Sending readings to a server
+
+The device can also send each reading as JSON to an HTTP API, for long-term storage. Readings wait in a small queue (24 readings) and are retried with backoff while the server is unreachable. To turn it on, save the server address, an API token and a device name:
+
+```bash
+curl --data-urlencode "url=http://<server>:8000" --data-urlencode "token=<token>" --data-urlencode "device=envmonitor-1" http://<device-ip>/apiconfig
+```
+
+Open `http://<device-ip>/apiconfig` to see the queue and the last HTTP result. The token is kept in the device's NVS storage and is never shown.
+
 ## Security
 
 This is built for a trusted home network:
@@ -51,6 +61,7 @@ This is built for a trusted home network:
 - The dashboard and settings, including restart and data reset, need no login.
 - ArduinoOTA has no password, so anyone on the network can replace the firmware.
 - The `EnvMonitor-Setup` access point is open while waiting for Wi-Fi details.
+- Anyone on the network can change the API settings at `/apiconfig`, and the API token travels over plain HTTP.
 
 Don't expose the device to the internet.
 
