@@ -9,6 +9,7 @@ export class ApiError extends Error {
   }
 }
 
+const TIMEOUT_MS = 10000;
 const FORM = { 'Content-Type': 'application/x-www-form-urlencoded' };
 
 async function call(method: string, path: string, form?: Record<string, string>): Promise<unknown> {
@@ -17,19 +18,30 @@ async function call(method: string, path: string, form?: Record<string, string>)
     init.headers = FORM;
     init.body = new URLSearchParams(form).toString();
   }
+  const ctl = new AbortController();
+  init.signal = ctl.signal;
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    ctl.abort();
+  }, TIMEOUT_MS);
   let res: Response;
+  let text: string;
   try {
     res = await fetch(path, init);
+    text = await res.text().catch(() => '');
   } catch (e) {
-    throw new ApiError(0, e instanceof Error ? e.message : 'network error');
+    throw new ApiError(0, timedOut ? 'timed out' : e instanceof Error ? e.message : 'network error');
+  } finally {
+    clearTimeout(timer);
   }
-  const text = await res.text().catch(() => '');
   let body: unknown = null;
   try {
     body = text ? JSON.parse(text) : null;
   } catch {
     body = null;
   }
+  if (res.ok && method === 'GET' && body === null) throw new ApiError(res.status, 'bad response');
   if (!res.ok) {
     const msg =
       body && typeof body === 'object' && 'error' in body && typeof (body as { error: unknown }).error === 'string'

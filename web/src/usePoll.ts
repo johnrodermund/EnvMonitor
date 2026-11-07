@@ -1,37 +1,28 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
-import { ApiError } from './api';
+import type { ApiError } from './api';
+import { createPoller } from './poller';
 
 export function usePoll<T>(fn: () => Promise<T>, intervalMs: number) {
-  const [data, setData] = useState<T | null>(null);
-  const [error, setError] = useState<ApiError | null>(null);
-  const [at, setAt] = useState<number | null>(null);
-  const [tick, setTick] = useState(0);
+  const [state, setState] = useState<{ data: T | null; error: ApiError | null; at: number | null }>({
+    data: null,
+    error: null,
+    at: null,
+  });
   const fnRef = useRef(fn);
   fnRef.current = fn;
+  const pollerRef = useRef<{ refresh(): void; stop(): void } | null>(null);
 
+  // A new intervalMs restarts the poller; the hook state keeps the last good data across the restart.
   useEffect(() => {
-    let alive = true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const run = async () => {
-      try {
-        const d = await fnRef.current();
-        if (!alive) return;
-        setData(d);
-        setError(null);
-        setAt(Date.now());
-      } catch (e) {
-        if (!alive) return;
-        setError(e instanceof ApiError ? e : new ApiError(0, e instanceof Error ? e.message : 'error'));
-      }
-      if (alive) timer = setTimeout(run, intervalMs);
-    };
-    run();
-    return () => {
-      alive = false;
-      if (timer) clearTimeout(timer);
-    };
-  }, [intervalMs, tick]);
+    const p = createPoller(
+      () => fnRef.current(),
+      intervalMs,
+      (s) => setState((prev) => ({ data: s.data ?? prev.data, error: s.error, at: s.at ?? prev.at })),
+    );
+    pollerRef.current = p;
+    return () => p.stop();
+  }, [intervalMs]);
 
-  const refresh = useCallback(() => setTick((n) => n + 1), []);
-  return { data, error, at, refresh };
+  const refresh = useCallback(() => pollerRef.current?.refresh(), []);
+  return { ...state, refresh };
 }
