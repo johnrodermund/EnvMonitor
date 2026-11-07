@@ -161,6 +161,38 @@ inline bool readMetric(const std::string &s, const char *name, MetricRange &out,
 
 }  // namespace ranges_detail
 
+//Form fields for POST /api/ranges: valid lo, valid hi, target lo, target hi for ph, then ec, then temp
+constexpr int RANGE_FIELD_COUNT = 12;
+
+inline const char *rangeFieldName(int i) {
+  static const char *const names[RANGE_FIELD_COUNT] = {
+      "ph_valid_lo",   "ph_valid_hi",   "ph_target_lo",   "ph_target_hi",
+      "ec_valid_lo",   "ec_valid_hi",   "ec_target_lo",   "ec_target_hi",
+      "temp_valid_lo", "temp_valid_hi", "temp_target_lo", "temp_target_hi"};
+  return names[i];
+}
+
+//Each field must be exactly one JSON-style number; a missing field arrives as "". Then validates.
+inline bool rangesFromForm(const std::string fields[RANGE_FIELD_COUNT], Ranges &out, std::string &error) {
+  static const char *const metrics[3] = {"ph", "ec", "temp"};
+  float values[RANGE_FIELD_COUNT];
+  for (int i = 0; i < RANGE_FIELD_COUNT; i++) {
+    size_t pos = 0;
+    if (!ranges_detail::readNumber(fields[i], pos, fields[i].size(), values[i]) || pos != fields[i].size()) {
+      error = std::string(metrics[i / 4]) + ": values must be finite numbers";
+      return false;
+    }
+  }
+  Ranges parsed;
+  MetricRange *targets[3] = {&parsed.ph, &parsed.ec, &parsed.temp};
+  for (int m = 0; m < 3; m++) {
+    *targets[m] = {values[m * 4], values[m * 4 + 1], values[m * 4 + 2], values[m * 4 + 3]};
+  }
+  if (!validateRanges(parsed, error)) return false;
+  out = parsed;
+  return true;
+}
+
 inline bool parseThresholds(const std::string &json, Ranges &out, std::string &error) {
   Ranges parsed;
   if (!ranges_detail::readMetric(json, "ph", parsed.ph, error)) return false;

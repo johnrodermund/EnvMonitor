@@ -216,6 +216,61 @@ void rejects_hex_and_other_non_json_numbers(void) {
   }
 }
 
+static void builtinFields(std::string fields[RANGE_FIELD_COUNT]) {
+  const char *values[RANGE_FIELD_COUNT] = {"2", "10", "5.5", "6.5", "0", "5000", "200", "1000", "30", "99", "60", "80"};
+  for (int i = 0; i < RANGE_FIELD_COUNT; i++) fields[i] = values[i];
+}
+
+void range_field_names_follow_the_form_contract(void) {
+  const char *expected[RANGE_FIELD_COUNT] = {
+      "ph_valid_lo",   "ph_valid_hi",   "ph_target_lo",   "ph_target_hi",
+      "ec_valid_lo",   "ec_valid_hi",   "ec_target_lo",   "ec_target_hi",
+      "temp_valid_lo", "temp_valid_hi", "temp_target_lo", "temp_target_hi"};
+  for (int i = 0; i < RANGE_FIELD_COUNT; i++) {
+    TEST_ASSERT_EQUAL_STRING(expected[i], rangeFieldName(i));
+  }
+}
+
+void form_fields_parse_into_ranges(void) {
+  std::string fields[RANGE_FIELD_COUNT];
+  builtinFields(fields);
+  fields[9] = "1e2";   //temp valid hi, exponent form as JS String() can produce
+  fields[4] = "-0.5";  //ec valid lo
+  Ranges r = {};
+  std::string error;
+  TEST_ASSERT_TRUE_MESSAGE(rangesFromForm(fields, r, error), error.c_str());
+  Ranges expected = builtinRanges();
+  expected.temp.validHi = 100.0f;
+  expected.ec.validLo = -0.5f;
+  TEST_ASSERT_TRUE(sameRanges(expected, r));
+}
+
+void form_rejects_missing_or_garbage_fields_by_metric(void) {
+  const char *bad[] = {"", "abc", "7x", "0x10", "nan", "Infinity", "1.", "+3", "1 2"};
+  for (const char *value : bad) {
+    for (int field : {0, 6, 11}) {
+      std::string fields[RANGE_FIELD_COUNT];
+      builtinFields(fields);
+      fields[field] = value;
+      Ranges r = builtinRanges();
+      std::string error;
+      TEST_ASSERT_FALSE_MESSAGE(rangesFromForm(fields, r, error), value);
+      const char *metric = field < 4 ? "ph" : (field < 8 ? "ec" : "temp");
+      TEST_ASSERT_EQUAL_STRING((std::string(metric) + ": values must be finite numbers").c_str(), error.c_str());
+    }
+  }
+}
+
+void form_applies_range_validation(void) {
+  std::string fields[RANGE_FIELD_COUNT];
+  builtinFields(fields);
+  fields[6] = "6000";  //ec target lo above valid hi
+  Ranges r = {};
+  std::string error;
+  TEST_ASSERT_FALSE(rangesFromForm(fields, r, error));
+  TEST_ASSERT_EQUAL_STRING("ec: target low must be below target high", error.c_str());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(parses_pi_thresholds_with_extra_keys);
@@ -237,5 +292,9 @@ int main() {
   RUN_TEST(rejects_huge_values_with_magnitude_error);
   RUN_TEST(parse_leaves_out_untouched_on_failure);
   RUN_TEST(rejects_hex_and_other_non_json_numbers);
+  RUN_TEST(range_field_names_follow_the_form_contract);
+  RUN_TEST(form_fields_parse_into_ranges);
+  RUN_TEST(form_rejects_missing_or_garbage_fields_by_metric);
+  RUN_TEST(form_applies_range_validation);
   return UNITY_END();
 }

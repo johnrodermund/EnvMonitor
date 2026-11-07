@@ -10,6 +10,10 @@
 #include <HTTPClient.h>
 #include "time.h"
 #include "src/reading_cycle.h"
+#include "src/api_commands.h"
+#include "src/api_json.h"
+#include "src/pi_cache.h"
+#include "src/ranges.h"
 #include "src/reading_log.h"
 #include "src/reading_queue.h"
 #include "src/sensor_math.h"
@@ -23,8 +27,15 @@ const char *setupApName = "EnvMonitor-Setup";
 const unsigned long setupPortalTimeout = 300000;  //5 min before retrying saved network
 volatile bool wifiSaved = false;
 
+// Title and interval are changed by POST /api/settings and read by handlers; loop() writes the
+// pending values to LittleFS because writeFile() blocks. settingsLock guards all six.
 String title = "Server";
 unsigned long interval0 = 300000;  //min between readings 60000 for 1
+SemaphoreHandle_t settingsLock;
+bool hasPendingTitle = false;
+bool hasPendingInterval = false;
+String pendingTitle;
+unsigned long pendingInterval = 0;
 const unsigned long holdTimeout = 900000;  //15 min before an abandoned wizard resumes sampling
 
 
@@ -36,10 +47,6 @@ DS18B20 ds(8);
 const int relay = 1;
 const int sensorPin = 3;  //pH and EC share this input, in the D1 mini A0 position
 
-String programlog;
-
-float phstdev = 0;
-
 enum class SettleStep { Idle, Holding, EcState, PhState };
 volatile bool settleRequested = false;
 SettleStep settleStep = SettleStep::Idle;
@@ -50,7 +57,14 @@ const unsigned long settleEcTime = 10000;
 const unsigned long settlePhTime = 90000;
 const int settlePins[] = { 0, 2, 3, 4, 5 };  //every free analog pin; GPIO 1 drives the relay
 
+// readingsLock guards readings and lastPhUncertainty: the sampling task appends, handlers read
 ReadingLog<totalcount> readings;
+float lastPhUncertainty = 0;  //of the newest reading, not persisted
+SemaphoreHandle_t readingsLock;
+
+// Last replies from the Pi's /stats, /reports/latest and /thresholds, fetched one per loop() pass
+PiCache piCache;
+SemaphoreHandle_t piCacheLock;
 
 // Readings API on the LAN: finished readings are queued by the sampling task and sent from loop().
 // The URL, token and device name live in NVS (Preferences namespace "api"), set through /apiconfig.
@@ -200,9 +214,11 @@ public:
   }
 
   void recordReading(const Reading &reading) override {
+    xSemaphoreTake(readingsLock, portMAX_DELAY);
     readings.append(reading.timestamp, reading.ph, reading.ec, reading.wt);
-    phstdev = reading.phUncertainty;
+    lastPhUncertainty = reading.phUncertainty;
     readings.save(readingStore);
+    xSemaphoreGive(readingsLock);
     queueForApi(reading);
   }
 
@@ -231,8 +247,11 @@ public:
   }
 
   void wipeReadings() override {
+    xSemaphoreTake(readingsLock, portMAX_DELAY);
     readings.clear();
+    lastPhUncertainty = 0;
     readings.save(readingStore);
+    xSemaphoreGive(readingsLock);
   }
 
   void restart() override {
@@ -270,6 +289,10 @@ void sendQueuedReading() {
     loadApiConfig();
     apiFailures = 0;
     apiNextAttempt = 0;
+    //Start the Pi fetch over, so a new URL or device is fetched now and the old replies are dropped
+    xSemaphoreTake(piCacheLock, portMAX_DELAY);
+    piCache = PiCache();
+    xSemaphoreGive(piCacheLock);
   }
   if (apiUrl.length() == 0 || apiToken.length() == 0 || WiFi.status() != WL_CONNECTED) {
     return;
@@ -316,6 +339,335 @@ void sendQueuedReading() {
     apiQueue.pop();
   }
   xSemaphoreGive(apiQueueLock);
+}
+
+//Fetches one Pi endpoint per call, every PiCache::ROUND_MS. The lock is never held across the GET.
+void fetchPiCache() {
+  if (apiUrl.length() == 0 || apiToken.length() == 0) {
+    xSemaphoreTake(piCacheLock, portMAX_DELAY);
+    piCache.markUnconfigured();
+    xSemaphoreGive(piCacheLock);
+    return;
+  }
+  xSemaphoreTake(piCacheLock, portMAX_DELAY);
+  bool due = piCache.due(millis());
+  PiEndpoint endpoint = PiEndpoint::Stats;
+  if (due) {
+    endpoint = piCache.next();
+  }
+  xSemaphoreGive(piCacheLock);
+  if (!due) {
+    return;
+  }
+
+  HTTPClient http;
+  http.setConnectTimeout(3000);
+  http.setTimeout(3000);
+  http.begin(apiUrl + piPath(endpoint, apiDevice.c_str()).c_str());
+  http.addHeader("Authorization", "Bearer " + apiToken);
+  int code = http.GET();
+  String body = code == 200 ? http.getString() : String();
+  http.end();
+
+  xSemaphoreTake(piCacheLock, portMAX_DELAY);
+  piCache.record(endpoint, code, body.c_str(), millis());
+  xSemaphoreGive(piCacheLock);
+}
+
+//Writes settings queued by POST /api/settings. Copies them out first: writeFile blocks for 2 s.
+void savePendingSettings() {
+  xSemaphoreTake(settingsLock, portMAX_DELAY);
+  bool saveTitle = hasPendingTitle;
+  bool saveInterval = hasPendingInterval;
+  String newTitle = pendingTitle;
+  unsigned long newInterval = pendingInterval;
+  hasPendingTitle = false;
+  hasPendingInterval = false;
+  xSemaphoreGive(settingsLock);
+  if (saveInterval) {
+    cycle.setInterval(newInterval);
+    writeFile("/interval0.txt", String(newInterval).c_str());
+  }
+  if (saveTitle) {
+    writeFile("/title.txt", newTitle.c_str());
+  }
+}
+
+//Saves readings API settings to NVS. A field whose has* flag is false is left unchanged.
+//Returns an error message, or "" when saved.
+String saveApiConfig(bool hasUrl, String url, bool hasToken, const String &token, bool hasDevice, const String &device) {
+  while (url.endsWith("/")) {
+    url.remove(url.length() - 1);
+  }
+  if (hasUrl && url.length() && !url.startsWith("http://")) {
+    return "url must start with http://";
+  }
+  Preferences apiPrefs;
+  apiPrefs.begin("api", false);
+  if (hasUrl) {
+    apiPrefs.putString("url", url);
+  }
+  if (hasToken) {
+    apiPrefs.putString("token", token);
+  }
+  if (hasDevice) {
+    apiPrefs.putString("device", device);
+  }
+  apiPrefs.end();
+  apiConfigChanged = true;
+  return "";
+}
+
+//Form body value, or "" when the field is missing
+String formValue(AsyncWebServerRequest *request, const char *name) {
+  return request->hasParam(name, true) ? request->getParam(name, true)->value() : String();
+}
+
+void sendJson(AsyncWebServerRequest *request, int code, const std::string &json) {
+  request->send(code, "application/json", json.c_str());
+}
+
+void sendError(AsyncWebServerRequest *request, int code, const std::string &message) {
+  sendJson(request, code, "{\"error\":" + jsonString(message) + "}");
+}
+
+void sendOk(AsyncWebServerRequest *request, int code = 200) {
+  sendJson(request, code, "{\"ok\":true}");
+}
+
+const char *stepName(CycleStep step) {
+  switch (step) {
+    case CycleStep::Holding: return "holding";
+    case CycleStep::Warmup: return "warmup";
+    case CycleStep::Sampling: return "sampling";
+    case CycleStep::Restarting: return "restarting";
+    default: return "waiting";
+  }
+}
+
+const char *jobName(CycleJob job) {
+  switch (job) {
+    case CycleJob::Ph4: return "ph4";
+    case CycleJob::Ph7: return "ph7";
+    case CycleJob::Manual: return "manual";
+    default: return "reading";
+  }
+}
+
+const char *stateName(CycleStatus status) {
+  switch (status) {
+    case CycleStatus::Busy: return "busy";
+    case CycleStatus::Holding: return "holding";
+    default: return "idle";
+  }
+}
+
+std::string statusText() {
+  StatusView s;
+  xSemaphoreTake(settingsLock, portMAX_DELAY);
+  s.title = title.c_str();
+  s.intervalMin = interval0 / 60000;
+  xSemaphoreGive(settingsLock);
+  s.uptimeS = millis() / 1000;
+  s.freeHeap = ESP.getFreeHeap();
+
+  xSemaphoreTake(readingsLock, portMAX_DELAY);
+  s.count = readings.size();
+  if (s.count > 0) {
+    s.lastTime = readings.timestampAt(s.count - 1);
+    s.ph = readings.ph().currentValue;
+    s.ec = readings.ec().currentValue;
+    s.wt = readings.wt().currentValue;
+    s.phPm = lastPhUncertainty;
+  }
+  s.means[0] = readings.ph().mean;
+  s.means[1] = readings.ec().mean;
+  s.means[2] = readings.wt().mean;
+  //Rounding can leave a variance a hair below zero
+  s.stds[0] = sqrt(max(readings.ph().sVar, 0.0f));
+  s.stds[1] = sqrt(max(readings.ec().sVar, 0.0f));
+  s.stds[2] = sqrt(max(readings.wt().sVar, 0.0f));
+  xSemaphoreGive(readingsLock);
+
+  unsigned long now = millis();
+  s.state = stateName(cycle.status());
+  s.step = stepName(cycle.step());
+  s.job = jobName(cycle.job());
+  s.warmupElapsedMs = cycle.warmupElapsed(now);
+  s.samplesTaken = cycle.samplesTaken();
+  s.ph4Ready = cycle.ph4Ready();
+  s.pendingPh4 = cycle.pendingPh4();
+  s.manualSeq = cycle.manualSeq();
+  const Reading &manual = cycle.manualReading();
+  s.manualPh = manual.ph;
+  s.manualEc = manual.ec;
+  s.manualWt = manual.wt;
+  s.calibrationSeq = cycle.calibrationSeq();
+  s.ph4Adc = cycle.ph4();
+  s.ph7Adc = cycle.ph7();
+  s.lastPhAdc = cycle.lastPhAdc();
+  s.phSampleCount = cycle.lastPhSampleCount();
+  if (s.phSampleCount > 20) {
+    s.phSampleCount = 20;
+  }
+  for (int i = 0; i < s.phSampleCount; i++) {
+    s.phSamples[i] = cycle.lastPhSample(i);
+  }
+  s.lastEcAdc = lastEcAdc;
+
+  xSemaphoreTake(apiQueueLock, portMAX_DELAY);
+  s.apiQueued = apiQueue.size();
+  xSemaphoreGive(apiQueueLock);
+  s.apiLastHttp = apiLastCode;
+  s.apiFailures = apiFailures;
+  s.apiDelivered = apiDelivered;
+  return statusJson(s);
+}
+
+//Device ranges saved by POST /api/ranges, as rangesJson text in NVS
+bool loadDeviceRanges(Ranges &out) {
+  Preferences rangePrefs;
+  if (!rangePrefs.begin("ranges", true)) {
+    return false;  //namespace not created yet
+  }
+  String text = rangePrefs.getString("json", "");
+  rangePrefs.end();
+  std::string error;
+  return text.length() && parseThresholds(text.c_str(), out, error);
+}
+
+std::string rangesText() {
+  Ranges device, pi, chosen;
+  bool hasDevice = loadDeviceRanges(device);
+  std::string piText;
+  xSemaphoreTake(piCacheLock, portMAX_DELAY);
+  bool hasPiText = piCache.thresholdsBody(piText);
+  xSemaphoreGive(piCacheLock);
+  std::string error;
+  bool hasPi = hasPiText && parseThresholds(piText, pi, error);
+  RangeSource source = chooseRanges(hasDevice, device, hasPi, pi, chosen);
+  return std::string("{\"source\":") + jsonString(rangeSourceName(source)) + ",\"ranges\":" + rangesJson(chosen) +
+         ",\"pi\":" + (hasPi ? rangesJson(pi) : std::string("null")) + "}";
+}
+
+//The JSON API used by the embedded app. Bodies are form-urlencoded, replies are JSON.
+void registerApiRoutes() {
+  server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest *request) {
+    sendJson(request, 200, statusText());
+  });
+
+  server.on("/api/readings", HTTP_GET, [](AsyncWebServerRequest *request) {
+    xSemaphoreTake(readingsLock, portMAX_DELAY);
+    std::string json = readingsJson(readings);
+    xSemaphoreGive(readingsLock);
+    sendJson(request, 200, json);
+  });
+
+  server.on("/api/settings", HTTP_GET, [](AsyncWebServerRequest *request) {
+    xSemaphoreTake(settingsLock, portMAX_DELAY);
+    std::string json = settingsJson(interval0 / 60000, title.c_str());
+    xSemaphoreGive(settingsLock);
+    sendJson(request, 200, json);
+  });
+
+  server.on("/api/settings", HTTP_POST, [](AsyncWebServerRequest *request) {
+    String interval = formValue(request, "interval");
+    String newTitle = formValue(request, "title");
+    std::string error;
+    if (!validateSettings(interval.c_str(), newTitle.c_str(), error)) {
+      sendError(request, 400, error);
+      return;
+    }
+    //Live values change now so the next GET shows them; loop() persists them
+    xSemaphoreTake(settingsLock, portMAX_DELAY);
+    if (interval.length()) {
+      interval0 = interval.toInt() * 60000UL;
+      pendingInterval = interval0;
+      hasPendingInterval = true;
+    }
+    if (newTitle.length()) {
+      title = newTitle;
+      pendingTitle = newTitle;
+      hasPendingTitle = true;
+    }
+    xSemaphoreGive(settingsLock);
+    sendOk(request);
+  });
+
+  server.on("/api/command", HTTP_POST, [](AsyncWebServerRequest *request) {
+    CommandResult result = dispatchCommand(formValue(request, "cmd").c_str(), cycle);
+    if (result.httpCode == 202) {
+      sendOk(request, 202);
+    } else {
+      sendError(request, result.httpCode, result.message);
+    }
+  });
+
+  server.on("/api/pi", HTTP_GET, [](AsyncWebServerRequest *request) {
+    xSemaphoreTake(piCacheLock, portMAX_DELAY);
+    std::string json = piCache.json(millis());
+    xSemaphoreGive(piCacheLock);
+    sendJson(request, 200, json);
+  });
+
+  server.on("/api/ranges", HTTP_GET, [](AsyncWebServerRequest *request) {
+    sendJson(request, 200, rangesText());
+  });
+
+  server.on("/api/ranges", HTTP_POST, [](AsyncWebServerRequest *request) {
+    std::string fields[RANGE_FIELD_COUNT];
+    for (int i = 0; i < RANGE_FIELD_COUNT; i++) {
+      fields[i] = formValue(request, rangeFieldName(i)).c_str();
+    }
+    Ranges ranges;
+    std::string error;
+    if (!rangesFromForm(fields, ranges, error)) {
+      sendError(request, 400, error);
+      return;
+    }
+    Preferences rangePrefs;
+    rangePrefs.begin("ranges", false);
+    size_t written = rangePrefs.putString("json", rangesJson(ranges).c_str());
+    rangePrefs.end();
+    if (written == 0) {
+      sendError(request, 500, "could not save ranges");
+      return;
+    }
+    sendOk(request);
+  });
+
+  server.on("/api/ranges", HTTP_DELETE, [](AsyncWebServerRequest *request) {
+    Preferences rangePrefs;
+    rangePrefs.begin("ranges", false);
+    rangePrefs.remove("json");
+    rangePrefs.end();
+    sendOk(request);
+  });
+
+  //Reads NVS rather than apiUrl and friends, which loop() reloads
+  server.on("/api/apiconfig", HTTP_GET, [](AsyncWebServerRequest *request) {
+    Preferences apiPrefs;
+    apiPrefs.begin("api", true);
+    String url = apiPrefs.getString("url", "");
+    String device = apiPrefs.getString("device", "envmonitor-1");
+    bool tokenSet = apiPrefs.getString("token", "").length() > 0;
+    apiPrefs.end();
+    sendJson(request, 200, "{\"url\":" + jsonString(url.c_str()) + ",\"device\":" + jsonString(device.c_str()) +
+                               ",\"token_set\":" + jsonBool(tokenSet) + "}");
+  });
+
+  //An empty field means "not provided": the app always sends url and device
+  server.on("/api/apiconfig", HTTP_POST, [](AsyncWebServerRequest *request) {
+    String url = formValue(request, "url");
+    String token = formValue(request, "token");
+    String device = formValue(request, "device");
+    String error = saveApiConfig(url.length() > 0, url, token.length() > 0, token, device.length() > 0, device);
+    if (error.length()) {
+      sendError(request, 400, error.c_str());
+      return;
+    }
+    sendOk(request);
+  });
 }
 
 void restoreAllData() {
@@ -374,6 +726,9 @@ void runWifiSetupPortal(bool hasSavedNetwork) {
 
 void setup() {
   apiQueueLock = xSemaphoreCreateMutex();
+  readingsLock = xSemaphoreCreateMutex();
+  piCacheLock = xSemaphoreCreateMutex();
+  settingsLock = xSemaphoreCreateMutex();
   Serial.begin(115200);
 
   Serial.println("Starting the LittleFS Webserver..");
@@ -385,6 +740,8 @@ void setup() {
   }
 
    restoreAllData();
+  //reset the interval if it is outside of the range; done before the server starts, as handlers change it
+  if (interval0 < 120000 || interval0 > 43200000) { interval0 = 600000; }
 
   // Connect to WIFI, credentials are kept in NVS so LittleFS uploads don't erase them
   Preferences wifiPrefs;
@@ -456,30 +813,18 @@ void setup() {
   });
 
   server.on("/apiconfig", HTTP_POST, [](AsyncWebServerRequest *request) {
-    Preferences apiPrefs;
-    apiPrefs.begin("api", false);
-    if (request->hasParam("url", true)) {
-      String url = request->getParam("url", true)->value();
-      while (url.endsWith("/")) {
-        url.remove(url.length() - 1);
-      }
-      if (url.length() && !url.startsWith("http://")) {
-        apiPrefs.end();
-        request->send(400, "text/plain", "url must start with http://");
-        return;
-      }
-      apiPrefs.putString("url", url);
+    //Unlike /api/apiconfig, an empty url or token here clears it
+    String error = saveApiConfig(request->hasParam("url", true), formValue(request, "url"), request->hasParam("token", true),
+                                 formValue(request, "token"), formValue(request, "device").length() > 0,
+                                 formValue(request, "device"));
+    if (error.length()) {
+      request->send(400, "text/plain", error);
+      return;
     }
-    if (request->hasParam("token", true)) {
-      apiPrefs.putString("token", request->getParam("token", true)->value());
-    }
-    if (request->hasParam("device", true) && request->getParam("device", true)->value().length()) {
-      apiPrefs.putString("device", request->getParam("device", true)->value());
-    }
-    apiPrefs.end();
-    apiConfigChanged = true;
     request->send(200, "text/plain", "saved\n");
   });
+
+  registerApiRoutes();
 
 
 
@@ -524,8 +869,6 @@ void setup() {
   Serial.println("Ready");
 
 
-  //reset the interval if it is outside of the range
-  if (interval0 < 120000 || interval0 > 43200000) { interval0 = 600000; }
   cycle.configure(readFile("/ph4.txt").toFloat(), readFile("/ph7.txt").toFloat(), interval0);
 
     xTaskCreatePinnedToCore (
@@ -605,6 +948,8 @@ void loop() {
   ArduinoOTA.handle();
   runSettleTest();
   sendQueuedReading();
+  fetchPiCache();
+  savePendingSettings();
   delay(2);  //single core: loop() outranks loop2, so it must yield or sampling starves
 }
 

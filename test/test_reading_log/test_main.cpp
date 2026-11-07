@@ -1,3 +1,4 @@
+#include <cstdio>
 #include <map>
 #include <string>
 #include <unity.h>
@@ -17,17 +18,17 @@ struct MemoryStore {
 void setUp() {}
 void tearDown() {}
 
-void chart_rows_are_empty_with_no_readings() {
-  ReadingLog<3> log;
-
-  TEST_ASSERT_EQUAL_STRING("[]", log.chartRows().c_str());
-}
-
-void chart_row_holds_one_complete_reading() {
-  ReadingLog<3> log;
-  log.append("2026,10-1,31,12,00,00", 7, 400, 68);
-
-  TEST_ASSERT_EQUAL_STRING("[[new Date(2026,10-1,31,12,00,00),7.00,400.00,68.00],\n]", log.chartRows().c_str());
+//Rows as "timestamp ph ec wt" lines, oldest first, read through the public accessors
+template <int N>
+std::string rows(const ReadingLog<N> &log) {
+  std::string text;
+  for (int i = 0; i < log.size(); i++) {
+    char line[96];
+    snprintf(line, sizeof(line), "%s %.2f %.2f %.2f\n", log.timestampAt(i), log.ph().getOrderedValue(i),
+             log.ec().getOrderedValue(i), log.wt().getOrderedValue(i));
+    text += line;
+  }
+  return text;
 }
 
 void full_log_drops_oldest_reading_from_every_series() {
@@ -36,7 +37,7 @@ void full_log_drops_oldest_reading_from_every_series() {
   log.append("t2", 2, 20, 200);
   log.append("t3", 3, 30, 300);
 
-  TEST_ASSERT_EQUAL_STRING("[[new Date(t2),2.00,20.00,200.00],\n[new Date(t3),3.00,30.00,300.00],\n]", log.chartRows().c_str());
+  TEST_ASSERT_EQUAL_STRING("t2 2.00 20.00 200.00\nt3 3.00 30.00 300.00\n", rows(log).c_str());
   TEST_ASSERT_EQUAL_FLOAT(25, log.ec().mean);
 }
 
@@ -52,7 +53,7 @@ void saved_log_restores_timestamps_and_statistics() {
   ReadingLog<3> restored;
   restored.restore(store);
 
-  TEST_ASSERT_EQUAL_STRING(saved.chartRows().c_str(), restored.chartRows().c_str());
+  TEST_ASSERT_EQUAL_STRING(rows(saved).c_str(), rows(restored).c_str());
   TEST_ASSERT_EQUAL_FLOAT(30, restored.ec().mean);
   TEST_ASSERT_EQUAL_FLOAT(40, restored.ec().currentValue);
   TEST_ASSERT_FLOAT_WITHIN(0.00002, 0.0001, restored.ph().sVar);
@@ -68,7 +69,7 @@ void reading_without_a_timestamp_survives_a_restart_in_position() {
   ReadingLog<3> restored;
   restored.restore(store);
 
-  TEST_ASSERT_EQUAL_STRING("[[new Date(),1.00,10.00,100.00],\n[new Date(t2),2.00,20.00,200.00],\n]", restored.chartRows().c_str());
+  TEST_ASSERT_EQUAL_STRING(" 1.00 10.00 100.00\nt2 2.00 20.00 200.00\n", rows(restored).c_str());
 }
 
 void save_cut_short_keeps_every_complete_reading() {
@@ -109,7 +110,7 @@ void old_format_files_migrate_in_chronological_order() {
   ReadingLog<3> log;
   log.restore(store);
 
-  TEST_ASSERT_EQUAL_STRING("[[new Date(t2),2.00,20.00,200.00],\n[new Date(t3),3.00,30.00,300.00],\n[new Date(t4),4.00,40.00,400.00],\n]", log.chartRows().c_str());
+  TEST_ASSERT_EQUAL_STRING("t2 2.00 20.00 200.00\nt3 3.00 30.00 300.00\nt4 4.00 40.00 400.00\n", rows(log).c_str());
   TEST_ASSERT_EQUAL_FLOAT(3, log.ph().mean);
 }
 
@@ -123,7 +124,7 @@ void misaligned_old_files_keep_newest_readings_that_line_up() {
   ReadingLog<3> log;
   log.restore(store);
 
-  TEST_ASSERT_EQUAL_STRING("[[new Date(t1),7.00,20.00,200.00],\n]", log.chartRows().c_str());
+  TEST_ASSERT_EQUAL_STRING("t1 7.00 20.00 200.00\n", rows(log).c_str());
 }
 
 void missing_files_start_an_empty_log() {
@@ -136,8 +137,6 @@ void missing_files_start_an_empty_log() {
 
 int main() {
   UNITY_BEGIN();
-  RUN_TEST(chart_rows_are_empty_with_no_readings);
-  RUN_TEST(chart_row_holds_one_complete_reading);
   RUN_TEST(full_log_drops_oldest_reading_from_every_series);
   RUN_TEST(saved_log_restores_timestamps_and_statistics);
   RUN_TEST(reading_without_a_timestamp_survives_a_restart_in_position);

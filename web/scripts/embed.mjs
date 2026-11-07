@@ -1,5 +1,5 @@
 // Gzips web/dist into src/web_assets.h so the firmware can serve the site from flash.
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import { dirname, join } from 'node:path';
@@ -16,6 +16,16 @@ const assets = [
   { path: '/assets/app.js', file: 'assets/app.js', mime: 'application/javascript', ref: './assets/app.js', name: 'app_js' },
   { path: '/assets/app.css', file: 'assets/app.css', mime: 'text/css', ref: './assets/app.css', name: 'app_css' },
 ];
+
+//Only these two files are served, so anything else Vite emits would be silently missing on the device
+const expected = assets.map((a) => a.file.slice('assets/'.length));
+const extra = readdirSync(join(dist, 'assets')).filter((f) => !expected.includes(f));
+if (extra.length) {
+  console.error(`web/dist/assets has files the firmware would not serve: ${extra.join(', ')}`);
+  console.error('Only app.js and app.css are embedded. Check the Vite build output settings.');
+  process.exit(1);
+}
+
 for (const a of assets) {
   a.data = gz(readFileSync(join(dist, a.file)));
   a.etag = etagOf(a.data);
@@ -45,7 +55,6 @@ for (const a of all) {
   out += `  { "${a.path}", "${a.mime}", "${a.etag}", ${a.name}, ${a.data.length} },\n`;
 }
 out += '};\nconst size_t webAssetCount = sizeof(webAssets) / sizeof(webAssets[0]);\n';
-writeFileSync(join(root, 'src', 'web_assets.h'), out);
 
 let total = 0;
 for (const a of all) {
@@ -54,6 +63,8 @@ for (const a of all) {
 }
 console.log(`total              ${String(total).padStart(6)} bytes (limit ${limit})`);
 if (total > limit) {
-  console.error('Embedded site is over the size limit');
+  console.error('Embedded site is over the size limit; src/web_assets.h left unchanged');
   process.exit(1);
 }
+writeFileSync(join(root, 'src', 'web_assets.h'), out);
+console.log('wrote src/web_assets.h');

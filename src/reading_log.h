@@ -48,19 +48,6 @@ public:
     wtStats.resetDataset();
   }
 
-  //JS array literal of [new Date(...), ph, ec, wt] rows, oldest first
-  std::string chartRows() const {
-    std::string rows = "[";
-    for (int i = 0; i < size(); i++) {
-      char values[64];
-      snprintf(values, sizeof(values), "),%.2f,%.2f,%.2f],\n", phStats.getOrderedValue(i), ecStats.getOrderedValue(i), wtStats.getOrderedValue(i));
-      rows += "[new Date(";
-      rows += orderedTimestamp(i);
-      rows += values;
-    }
-    return rows + "]";
-  }
-
   template <typename Store>
   void save(Store &store) const {
     std::string text = fileHeader;
