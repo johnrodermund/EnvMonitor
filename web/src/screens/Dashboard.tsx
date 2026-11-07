@@ -5,16 +5,10 @@ import { Progress } from '../components/Progress';
 import { ReviewPanel } from '../components/ReviewPanel';
 import { clock, hasReadings, nextReading } from '../logic/dashboard';
 import { localTime } from '../logic/format';
-import { levelFor, tagsFor } from '../logic/status';
+import { BUILTIN_RANGES, levelFor, tagsFor } from '../logic/status';
 import { StatusContext } from '../status-context';
 import { usePoll } from '../usePoll';
-import type { MetricStats, Ranges } from '../types';
-
-const BUILTIN: Ranges = {
-  ph: { valid: [2, 10], target: [5.5, 6.5] },
-  ec: { valid: [0, 5000], target: [200, 1000] },
-  temp: { valid: [30, 99], target: [60, 80] },
-};
+import type { MetricStats } from '../types';
 
 export function Dashboard() {
   const { data: status, error, at, refresh } = useContext(StatusContext);
@@ -27,7 +21,7 @@ export function Dashboard() {
     return <p class="muted">{error ? 'Device not responding' : 'Loading…'}</p>;
   }
 
-  const ranges = rangesPoll.data?.ranges ?? BUILTIN;
+  const ranges = rangesPoll.data?.ranges ?? BUILTIN_RANGES;
   const last = status.last_reading;
   const piBody = pi.data?.stats.body ?? null;
   const flags = piBody?.flags ?? [];

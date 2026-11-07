@@ -1,6 +1,7 @@
 import uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
 import { useEffect, useRef } from 'preact/hooks';
+import { isZoomed, nextDataMode } from '../logic/window';
 
 export interface MetricChartProps {
   title: string;
@@ -21,7 +22,7 @@ function outsideOf(values: (number | null)[], [lo, hi]: [number, number]): (numb
   return values.map((v) => (v !== null && (v < lo || v > hi) ? v : null));
 }
 
-function build(el: HTMLElement, p: MetricChartProps, width: number): uPlot {
+function build(el: HTMLElement, p: MetricChartProps, width: number, zoomed: { current: boolean }): uPlot {
   const text = css('--muted');
   const grid = css('--border');
   const accent = css('--accent');
@@ -59,6 +60,13 @@ function build(el: HTMLElement, p: MetricChartProps, width: number): uPlot {
       },
     ],
     hooks: {
+      setScale: [
+        (u, key) => {
+          if (key !== 'x') return;
+          const xs = u.data[0];
+          zoomed.current = isZoomed(u.scales.x.min, u.scales.x.max, xs[0], xs[xs.length - 1]);
+        },
+      ],
       init: [
         (u) => {
           // Hide the helper series from the legend; its marks still draw.
@@ -86,6 +94,7 @@ function build(el: HTMLElement, p: MetricChartProps, width: number): uPlot {
 export function MetricChart(props: MetricChartProps) {
   const host = useRef<HTMLDivElement>(null);
   const chart = useRef<uPlot | null>(null);
+  const zoomed = useRef(false);
   const latest = useRef(props);
   latest.current = props;
   const targetKey = props.target.join(',');
@@ -96,7 +105,7 @@ export function MetricChart(props: MetricChartProps) {
     if (!el) return;
     const make = () => {
       chart.current?.destroy();
-      chart.current = build(el, latest.current, el.clientWidth || 300);
+      chart.current = build(el, latest.current, el.clientWidth || 300, zoomed);
     };
     make();
     const mq = window.matchMedia('(prefers-color-scheme: dark)');
@@ -114,8 +123,17 @@ export function MetricChart(props: MetricChartProps) {
   }, [targetKey]);
 
   useEffect(() => {
-    chart.current?.setData([props.times, props.values, outsideOf(props.values, props.target)], false);
+    const u = chart.current;
+    if (!u) return;
+    const mode = nextDataMode(zoomed.current);
+    u.setData([props.times, props.values, outsideOf(props.values, props.target)], mode.resetScales);
+    if (mode.redraw) u.redraw();
   }, [props.times, props.values]);
 
-  return <div class="chart" ref={host} aria-label={`${props.title} chart`} />;
+  // The padding lives on the outer box so the host's width is the drawable width.
+  return (
+    <div class="chart">
+      <div ref={host} aria-label={`${props.title} chart`} />
+    </div>
+  );
 }

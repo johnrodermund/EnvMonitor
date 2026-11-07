@@ -1,17 +1,12 @@
-import { useContext, useEffect, useMemo, useState } from 'preact/hooks';
+import { useContext, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { getRanges, getReadings } from '../api';
 import { MetricChart } from '../components/MetricChart';
 import { toCsv } from '../logic/csv';
+import { BUILTIN_RANGES } from '../logic/status';
 import { rowSeconds, windowRows } from '../logic/window';
 import { StatusContext } from '../status-context';
 import { usePoll } from '../usePoll';
-import type { Ranges, Row } from '../types';
-
-const BUILTIN: Ranges = {
-  ph: { valid: [2, 10], target: [5.5, 6.5] },
-  ec: { valid: [0, 5000], target: [200, 1000] },
-  temp: { valid: [30, 99], target: [60, 80] },
-};
+import type { Row } from '../types';
 
 const WINDOWS: { label: string; hours: number | null }[] = [
   { label: '6 h', hours: 6 },
@@ -35,12 +30,18 @@ export function Charts() {
 
   const count = status?.count ?? null;
   const lastTime = status?.last_reading?.time ?? null;
+  const mounted = useRef(false);
   useEffect(() => {
+    // usePoll already fetches on mount; only refresh on later changes.
+    if (!mounted.current) {
+      mounted.current = true;
+      return;
+    }
     readings.refresh();
   }, [count, lastTime]);
 
   const all = readings.data;
-  const ranges = rangesPoll.data?.ranges ?? BUILTIN;
+  const ranges = rangesPoll.data?.ranges ?? BUILTIN_RANGES;
   const rows = useMemo(() => windowRows(all ?? [], hours, Date.now()), [all, hours]);
   const times = useMemo(() => rows.map((r) => rowSeconds(r[0]) as number), [rows]);
   const ph = useMemo(() => column(rows, 1), [rows]);
@@ -83,6 +84,7 @@ export function Charts() {
             ))}
             <button onClick={download}>Download CSV</button>
           </div>
+          {!rangesPoll.data && rangesPoll.error && <p class="warn-text small">Using built-in ranges (device ranges unavailable)</p>}
           <p class="muted small">Shaded band is the target range; dots outside it are marked. Drag to zoom, double-click to reset.</p>
           <div class="chart-wrap" key={String(hours)}>
             <MetricChart title="pH" unit="" digits={2} times={times} values={ph} target={ranges.ph.target} />

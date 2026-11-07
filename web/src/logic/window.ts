@@ -20,3 +20,17 @@ export function windowRows(rows: Row[], hours: number | null, _nowMs: number): R
   const cutoff = newest - hours * 3600;
   return timed.filter((r) => (rowSeconds(r[0]) as number) >= cutoff);
 }
+
+/** True when the x scale shows less than the full data extent. */
+export function isZoomed(min: number | null | undefined, max: number | null | undefined, dataMin: number | undefined, dataMax: number | undefined): boolean {
+  if (min == null || max == null || dataMin === undefined || dataMax === undefined) return false;
+  return min > dataMin || max < dataMax;
+}
+
+/**
+ * uPlot's setData(d, false) skips the redraw, so a zoomed chart needs an explicit redraw;
+ * an unzoomed chart resets scales so the x range extends to new readings.
+ */
+export function nextDataMode(zoomed: boolean): { resetScales: boolean; redraw: boolean } {
+  return zoomed ? { resetScales: false, redraw: true } : { resetScales: true, redraw: false };
+}

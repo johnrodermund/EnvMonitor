@@ -1,4 +1,10 @@
-import type { MetricRange } from '../types';
+import type { MetricRange, Ranges } from '../types';
+
+export const BUILTIN_RANGES: Ranges = {
+  ph: { valid: [2, 10], target: [5.5, 6.5] },
+  ec: { valid: [0, 5000], target: [200, 1000] },
+  temp: { valid: [30, 99], target: [60, 80] },
+};
 
 export type Level = 'ok' | 'warn' | 'fault';
 
