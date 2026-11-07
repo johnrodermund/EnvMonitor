@@ -160,6 +160,15 @@ Navigation is a bottom tab bar on phones and a side bar on desktop. Dark mode fo
 - If the firmware with the embedded site would leave under 60 KB free, stop and choose between a larger app partition (one USB upload) and the LittleFS approach.
 - Deploy by OTA only. The old HTML files left in LittleFS are unused and harmless.
 
+## Implementation notes
+
+Deviations from the endpoint table above, made while building:
+
+- `POST /api/settings`, `POST /api/command` and `POST /api/apiconfig` take form-encoded bodies (`interval`, `title`; `cmd`; `url`, `token`, `device`), not JSON, because the async web server reads form fields without buffering a body.
+- Device ranges are saved with `POST /api/ranges`, not `PUT`, with twelve flat form fields (`ph_valid_lo` through `temp_target_hi`). `DELETE /api/ranges` is unchanged. Replies stay JSON.
+- Four mutexes guard the shared state: `settingsLock`, `readingsLock`, `piCacheLock` and `apiQueueLock`.
+- Deployed to the device by OTA on 2026-11-07; the firmware is 1,138,674 bytes of the 1,310,720-byte slot.
+
 ## Out of scope
 
 - Device commands from the Pi or the Android app.

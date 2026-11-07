@@ -1,6 +1,6 @@
 # EnvMonitor
 
-ESP32-C3 firmware that logs pH, electrical conductivity (EC) and water temperature, and serves a dashboard with charts over Wi-Fi.
+ESP32-C3 firmware that logs pH, electrical conductivity (EC) and water temperature, and serves a web app with a dashboard, charts, measure and calibrate screens and settings over Wi-Fi.
 
 ## Hardware
 
@@ -24,7 +24,17 @@ Libraries:
 
 For USB Serial output on boards with native USB, build with `-DARDUINO_USB_MODE=1 -DARDUINO_USB_CDC_ON_BOOT=1`.
 
-`data/` is the LittleFS image with the web pages. Upload it once with a LittleFS upload tool. Uploading it again replaces the logged readings, calibration and settings on the device.
+The web app is a Preact single-page app in `web/` and is built into the firmware. Before building the firmware, install Node (26 tested) and run:
+
+```bash
+cd web
+npm install
+npm run build && npm run embed
+```
+
+`npm run embed` writes `src/web_assets.h`, which holds the gzipped app. Uploading the firmware, including over the network, updates the site, so there is no separate web upload. `npm run dev` serves the app with mock data for working on the UI.
+
+`data/` is the LittleFS image with the seed state files (readings, calibration, title and interval). Upload it once with a LittleFS upload tool on a new device. Uploading it again replaces the logged readings, calibration and settings on the device.
 
 ## Tests
 
@@ -42,7 +52,7 @@ pio test -e native
 
 Firmware updates can then go over the network with ArduinoOTA.
 
-Calibrate pH from Settings with pH 4 and pH 7 buffer solutions. A reading takes about 25 seconds because the pH sensor warms up for 20.
+Calibrate pH from the Calibrate screen with pH 4 and pH 7 buffer solutions. A reading takes about 25 seconds because the pH sensor warms up for 20.
 
 ## Sending readings to a server
 
@@ -52,7 +62,7 @@ The device can also send each reading as JSON to an HTTP API, for long-term stor
 curl --data-urlencode "url=http://<server>:8000" --data-urlencode "token=<token>" --data-urlencode "device=envmonitor-1" http://<device-ip>/apiconfig
 ```
 
-Open `http://<device-ip>/apiconfig` to see the queue and the last HTTP result. The token is kept in the device's NVS storage and is never shown.
+Open `http://<device-ip>/apiconfig` (or the Settings and Diagnostics screens) to see the queue and the last HTTP result. The token is kept in the device's NVS storage and is never shown.
 
 ## Security
 
@@ -61,7 +71,7 @@ This is built for a trusted home network:
 - The dashboard and settings, including restart and data reset, need no login.
 - ArduinoOTA has no password, so anyone on the network can replace the firmware.
 - The `EnvMonitor-Setup` access point is open while waiting for Wi-Fi details.
-- Anyone on the network can change the API settings at `/apiconfig`, and the API token travels over plain HTTP.
+- Anyone on the network can change the API settings at `/api/apiconfig`, and the API token travels over plain HTTP.
 
 Don't expose the device to the internet.
 
