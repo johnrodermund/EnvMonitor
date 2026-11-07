@@ -4,6 +4,8 @@
 #include <cstdio>
 #include <string>
 
+#include "json_text.h"
+
 //A finished reading waiting to be sent to the readings API. NaN means the sensor gave no value.
 struct QueuedReading {
   long long epoch = 0;  //UTC seconds
@@ -79,26 +81,6 @@ inline std::string utcIso(long long epoch) {
   snprintf(text, sizeof(text), "%04lld-%02d-%02dT%02lld:%02lld:%02lldZ", year, month, day,
            seconds / 3600, (seconds % 3600) / 60, seconds % 60);
   return text;
-}
-
-inline std::string jsonNumber(float value) {
-  if (std::isnan(value) || std::isinf(value)) {
-    return "null";
-  }
-  char text[32];
-  snprintf(text, sizeof(text), "%.3f", value);
-  return text;
-}
-
-inline std::string jsonString(const char *value) {
-  std::string text = "\"";
-  for (const char *c = value; *c; c++) {
-    if (*c == '"' || *c == '\\') {
-      text += '\\';
-    }
-    text += *c;
-  }
-  return text + "\"";
 }
 
 //Body for POST /readings on the readings API
