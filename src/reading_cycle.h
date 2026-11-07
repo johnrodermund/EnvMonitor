@@ -56,6 +56,10 @@ public:
     pending = command;
   }
 
+  CycleCommand pendingCommand() const {
+    return pending.load();
+  }
+
   CycleStatus status() const {
     if (pending != CycleCommand::None) {
       return CycleStatus::Busy;

@@ -164,11 +164,71 @@ void calibrate_flow_end_to_end() {
   TEST_ASSERT_EQUAL_FLOAT(1900, cycle.ph7());
 }
 
+void cancel_cannot_overwrite_pending_reset_or_restart() {
+  FakeHost host;
+  ReadingCycle cycle(host, 2368, 1880, interval, holdTimeout);
+  unsigned long now = 0;
+  run(cycle, now, oneMeasurement);
+  TEST_ASSERT_EQUAL_INT(202, dispatchCommand("reset", cycle).httpCode);
+  CommandResult r = dispatchCommand("cancel", cycle);
+  TEST_ASSERT_EQUAL_INT(409, r.httpCode);
+  TEST_ASSERT_EQUAL_STRING("restarting", r.message.c_str());
+  run(cycle, now, 1000);
+  TEST_ASSERT_TRUE(host.wiped);
+
+  FakeHost host2;
+  ReadingCycle cycle2(host2, 2368, 1880, interval, holdTimeout);
+  now = 0;
+  run(cycle2, now, oneMeasurement);
+  dispatchCommand("restart", cycle2);
+  TEST_ASSERT_EQUAL_INT(409, dispatchCommand("cancel", cycle2).httpCode);
+  run(cycle2, now, 1000);
+  TEST_ASSERT_TRUE(cycle2.step() == CycleStep::Restarting);
+  run(cycle2, now, 3000);
+  TEST_ASSERT_TRUE(host2.restarted);
+}
+
+void cancel_from_holding_returns_to_idle() {
+  FakeHost host;
+  ReadingCycle cycle(host, 2368, 1880, interval, holdTimeout);
+  unsigned long now = 0;
+  run(cycle, now, oneMeasurement);
+  dispatchCommand("measure_start", cycle);
+  run(cycle, now, 1000);
+  TEST_ASSERT_TRUE(cycle.status() == CycleStatus::Holding);
+  TEST_ASSERT_EQUAL_INT(202, dispatchCommand("cancel", cycle).httpCode);
+  run(cycle, now, 1000);
+  TEST_ASSERT_TRUE(cycle.status() == CycleStatus::Idle);
+}
+
+void reset_wipes_readings_and_restart_does_not() {
+  FakeHost host;
+  ReadingCycle cycle(host, 2368, 1880, interval, holdTimeout);
+  unsigned long now = 0;
+  run(cycle, now, oneMeasurement);
+  dispatchCommand("restart", cycle);
+  run(cycle, now, 4000);
+  TEST_ASSERT_TRUE(host.restarted);
+  TEST_ASSERT_FALSE(host.wiped);
+
+  FakeHost host2;
+  ReadingCycle cycle2(host2, 2368, 1880, interval, holdTimeout);
+  now = 0;
+  run(cycle2, now, oneMeasurement);
+  dispatchCommand("reset", cycle2);
+  run(cycle2, now, 4000);
+  TEST_ASSERT_TRUE(host2.wiped);
+  TEST_ASSERT_TRUE(host2.restarted);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(unknown_is_400);
   RUN_TEST(cancel_always_accepted_even_when_busy);
   RUN_TEST(cancel_rejected_while_restarting);
+  RUN_TEST(cancel_cannot_overwrite_pending_reset_or_restart);
+  RUN_TEST(cancel_from_holding_returns_to_idle);
+  RUN_TEST(reset_wipes_readings_and_restart_does_not);
   RUN_TEST(busy_rejects_reading_with_step);
   RUN_TEST(busy_while_command_pending);
   RUN_TEST(reading_accepted_when_idle);

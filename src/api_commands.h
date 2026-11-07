@@ -31,13 +31,6 @@ inline std::string busyStepName(const ReadingCycle &cycle) {
 
 //Maps a web API command to a ReadingCycle request, or says why it can't run now.
 inline CommandResult dispatchCommand(const std::string &cmd, ReadingCycle &cycle) {
-  bool known = cmd == "cancel" || cmd == "restart" || cmd == "reset" || cmd == "reading" ||
-               cmd == "measure_start" || cmd == "calibrate_start" || cmd == "measure" ||
-               cmd == "calibrate_ph4" || cmd == "calibrate_ph7";
-  if (!known) {
-    return {400, "unknown command"};
-  }
-
   if (cmd == "restart") {
     cycle.request(CycleCommand::Restart);
     return commandAccepted();
@@ -47,42 +40,51 @@ inline CommandResult dispatchCommand(const std::string &cmd, ReadingCycle &cycle
     return commandAccepted();
   }
   if (cmd == "cancel") {
-    if (cycle.step() == CycleStep::Restarting) {
+    CycleCommand queued = cycle.pendingCommand();
+    if (cycle.step() == CycleStep::Restarting || queued == CycleCommand::Restart ||
+        queued == CycleCommand::WipeAndRestart) {
       return commandRejected("restarting");
     }
     cycle.request(CycleCommand::Resume);
     return commandAccepted();
   }
 
+  //What the cycle must be doing before the command can run
+  enum class Need { Idle, IdleOrHolding, Holding, HoldingWithPh4 };
+  CycleCommand request;
+  Need need;
+  if (cmd == "reading") {
+    request = CycleCommand::TakeReading;
+    need = Need::Idle;
+  } else if (cmd == "measure_start" || cmd == "calibrate_start") {
+    request = CycleCommand::Hold;
+    need = Need::IdleOrHolding;
+  } else if (cmd == "measure") {
+    request = CycleCommand::MeasureManual;
+    need = Need::Holding;
+  } else if (cmd == "calibrate_ph4") {
+    request = CycleCommand::MeasurePh4;
+    need = Need::Holding;
+  } else if (cmd == "calibrate_ph7") {
+    request = CycleCommand::MeasurePh7;
+    need = Need::HoldingWithPh4;
+  } else {
+    return {400, "unknown command"};
+  }
+
   CycleStatus status = cycle.status();
   if (status == CycleStatus::Busy) {
     return commandRejected("busy: " + busyStepName(cycle));
   }
-
-  if (cmd == "reading") {
-    if (status != CycleStatus::Idle) {
-      return commandRejected("finish or cancel the current step first");
-    }
-    cycle.request(CycleCommand::TakeReading);
-    return commandAccepted();
+  if (need == Need::Idle && status != CycleStatus::Idle) {
+    return commandRejected("finish or cancel the current step first");
   }
-  if (cmd == "measure_start" || cmd == "calibrate_start") {
-    cycle.request(CycleCommand::Hold);
-    return commandAccepted();
-  }
-
-  if (status != CycleStatus::Holding) {
+  if ((need == Need::Holding || need == Need::HoldingWithPh4) && status != CycleStatus::Holding) {
     return commandRejected("start first");
   }
-  if (cmd == "measure") {
-    cycle.request(CycleCommand::MeasureManual);
-  } else if (cmd == "calibrate_ph4") {
-    cycle.request(CycleCommand::MeasurePh4);
-  } else {
-    if (!cycle.ph4Ready()) {
-      return commandRejected("measure pH 4 first");
-    }
-    cycle.request(CycleCommand::MeasurePh7);
+  if (need == Need::HoldingWithPh4 && !cycle.ph4Ready()) {
+    return commandRejected("measure pH 4 first");
   }
+  cycle.request(request);
   return commandAccepted();
 }
