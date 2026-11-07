@@ -1,7 +1,7 @@
 import type { StatusJson } from '../types';
 
 export type Kind = 'measure' | 'calibrate';
-export type Step = 'intro' | 'starting' | 'ready' | 'measuring' | 'ph4' | 'ph4done' | 'ph7' | 'done' | 'cancelled';
+export type Step = 'intro' | 'starting' | 'ready' | 'measuring' | 'ph4' | 'ph4done' | 'ph7' | 'cancelling' | 'done' | 'cancelled';
 
 export interface WizardState {
   kind: Kind;
@@ -45,16 +45,35 @@ export function wizardSent(w: WizardState): WizardState {
   return w;
 }
 
+/** The cancel command was accepted; the next statuses settle it as done or cancelled. */
+export function wizardCancelling(w: WizardState): WizardState {
+  return { ...w, step: 'cancelling', grace: GRACE };
+}
+
+export function wizardCancelled(w: WizardState): WizardState {
+  return { ...w, step: 'cancelled', message: cancelMsg(w.kind) };
+}
+
 export function wizardOnStatus(w: WizardState, s: StatusJson): WizardState {
   if (w.step === 'intro' || w.step === 'done' || w.step === 'cancelled') return w;
-  const cancel = (): WizardState => ({ ...w, step: 'cancelled', message: cancelMsg(w.kind) });
+  const cancel = () => wizardCancelled(w);
   if (s.uptime_s !== null && s.uptime_s < w.startUptime) return cancel();
 
   // A seq increase arrives in the same status as idle, so check it before idle means cancelled.
-  const resultStep = w.step === 'ready' || w.step === 'measuring' || w.step === 'ph7';
+  const resultStep = w.step === 'cancelling' || w.step === 'ready' || w.step === 'measuring' || w.step === 'ph7';
   if (resultStep && seqOf(w.kind, s) > w.startSeq) return { ...w, step: 'done' };
 
   const state = s.cycle.state;
+  if (w.step === 'cancelling') {
+    // The device was holding or busy before the cancel, so idle settles it. Holding means the
+    // cancel is not applied yet or the status is stale, so wait out the grace first.
+    if (state === 'idle') return cancel();
+    if (state === 'holding') {
+      const g = w.grace ?? 0;
+      return g > 0 ? { ...w, grace: g - 1 } : cancel();
+    }
+    return w;
+  }
   if (state === 'idle') {
     // The device should be holding here, so idle can only mean a cancel or a timeout.
     if (w.step === 'ready' || w.step === 'ph4done') return cancel();

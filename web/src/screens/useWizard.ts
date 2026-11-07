@@ -1,6 +1,6 @@
 import { useContext, useEffect, useState } from 'preact/hooks';
 import { ApiError, command } from '../api';
-import { wizardBegin, wizardOnStatus, wizardSent, wizardStart } from '../logic/wizard';
+import { wizardBegin, wizardCancelling, wizardOnStatus, wizardSent, wizardStart } from '../logic/wizard';
 import type { Kind, WizardState } from '../logic/wizard';
 import { StatusContext } from '../status-context';
 import type { CommandName } from '../types';
@@ -47,9 +47,7 @@ export function useWizard(kind: Kind) {
       setMsg(null);
       try {
         await command('cancel');
-        setW((cur) =>
-          cur ? { ...cur, step: 'cancelled', message: kind === 'calibrate' ? 'Calibration cancelled' : 'Measurement cancelled' } : cur,
-        );
+        setW((cur) => (cur ? wizardCancelling(cur) : cur));
       } catch (e) {
         setMsg(e instanceof ApiError ? e.message : 'Request failed');
       }

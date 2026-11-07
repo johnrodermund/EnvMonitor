@@ -43,6 +43,7 @@ export function Measure() {
           </div>
         </>
       )}
+      {w.step === 'cancelling' && <p>Cancelling…</p>}
       {w.step === 'cancelled' && (
         <>
           <p class="err">{w.message ?? 'Measurement cancelled'}</p>

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { wizardStart, wizardBegin, wizardSent, wizardOnStatus } from './wizard';
+import { wizardStart, wizardBegin, wizardSent, wizardOnStatus, wizardCancelling, wizardCancelled } from './wizard';
 import type { StatusJson } from '../types';
 
 function st(o: {
@@ -122,5 +122,64 @@ describe('wizard', () => {
     let w = wizardSent(calReady());
     for (let i = 0; i < 3; i++) w = wizardOnStatus(w, st({ state: 'idle' }));
     expect(w.step).toBe('cancelled');
+  });
+
+  function inPh7() {
+    return wizardSent(wizardOnStatus(wizardSent(calReady()), st({ state: 'holding', ph4_ready: true })));
+  }
+
+  it('cancel_after_save_reports_done', () => {
+    let w = wizardCancelling(inPh7());
+    expect(w.step).toBe('cancelling');
+    w = wizardOnStatus(w, st({ state: 'idle', cseq: 1 }));
+    expect(w.step).toBe('done');
+  });
+
+  it('cancelling_then_idle_is_cancelled', () => {
+    let w = wizardCancelling(calReady());
+    w = wizardOnStatus(w, st({ state: 'idle' }));
+    expect(w.step).toBe('cancelled');
+    expect(w.message).toBe('Calibration cancelled');
+  });
+
+  it('cancelling_ignores_stale_holding_then_settles', () => {
+    let w = wizardCancelling(calReady());
+    w = wizardOnStatus(w, st({ state: 'holding' }));
+    w = wizardOnStatus(w, st({ state: 'busy' }));
+    expect(w.step).toBe('cancelling');
+    w = wizardOnStatus(w, st({ state: 'holding' }));
+    w = wizardOnStatus(w, st({ state: 'holding' }));
+    expect(w.step).toBe('cancelled');
+  });
+
+  it('cancelling_detects_restart', () => {
+    const w = wizardOnStatus(wizardCancelling(calReady()), st({ state: 'holding', uptime: 3 }));
+    expect(w.step).toBe('cancelled');
+  });
+
+  it('wizardCancelled_sets_message', () => {
+    expect(wizardCancelled(wizardStart('measure', st())).message).toBe('Measurement cancelled');
+  });
+
+  it('idle_in_ph7_without_seq_cancels_after_grace', () => {
+    let w = inPh7();
+    for (let i = 0; i < 3; i++) w = wizardOnStatus(w, st({ state: 'idle' }));
+    expect(w.step).toBe('cancelled');
+  });
+
+  it('seq_increase_in_ph4_and_ph4done_is_ignored', () => {
+    let w = wizardSent(calReady());
+    w = wizardOnStatus(w, st({ state: 'busy', cseq: 1 }));
+    expect(w.step).toBe('ph4');
+    w = wizardOnStatus(w, st({ state: 'holding', ph4_ready: true, cseq: 1 }));
+    expect(w.step).toBe('ph4done');
+    w = wizardOnStatus(w, st({ state: 'holding', ph4_ready: true, cseq: 2 }));
+    expect(w.step).toBe('ph4done');
+  });
+
+  it('restart_detected_in_ph4', () => {
+    const w = wizardOnStatus(wizardSent(calReady()), st({ state: 'busy', uptime: 3 }));
+    expect(w.step).toBe('cancelled');
+    expect(w.message).toBe('Calibration cancelled');
   });
 });

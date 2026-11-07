@@ -117,6 +117,11 @@ export function mockApi(): Plugin {
           }
           if (method === 'POST') {
             if (path === '/api/command') {
+              // The real device accepts cancel while busy.
+              if (form.get('cmd') === 'cancel') {
+                if (scenario === 'idle') wizCommand('cancel');
+                return send(202, { ok: true });
+              }
               if (scenario === 'busy' || Date.now() < busyUntil || (scenario === 'idle' && wiz.endAt && Date.now() < wiz.endAt)) return send(409, { error: 'busy: warmup' });
               if (scenario === 'idle' && wizCommand(form.get('cmd') ?? '')) return send(202, { ok: true });
               if (scenario === 'idle') busyUntil = Date.now() + 5000;

@@ -56,6 +56,7 @@ export function Calibrate() {
           </div>
         </>
       )}
+      {w.step === 'cancelling' && <p>Cancelling…</p>}
       {w.step === 'cancelled' && (
         <>
           <p class="err">{w.message ?? 'Calibration cancelled'}</p>
