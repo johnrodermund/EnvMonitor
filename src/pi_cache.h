@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include "json_text.h"
 
@@ -50,14 +51,14 @@ public:
     Entry &entry = entries_[(int)e];
     if (httpCode == 200) {
       std::string text = trim(body);
+      entry.none = false;
       if (text.size() > capFor(e)) {
         entry.error = "reply too large";
-      } else if (text.size() < 2 || text.front() != '{' || text.back() != '}') {
+      } else if (!balancedObject(text)) {
         entry.error = "not JSON";
       } else {
         entry.body = text;
         entry.hasBody = true;
-        entry.none = false;
         entry.fetchedAt = now;
         entry.error.clear();
       }
@@ -67,8 +68,10 @@ public:
       entry.none = true;
       entry.error.clear();
     } else if (httpCode <= 0) {
+      entry.none = false;
       entry.error = "unreachable";
     } else {
+      entry.none = false;
       entry.error = "HTTP " + std::to_string(httpCode);
     }
   }
@@ -119,10 +122,46 @@ private:
     return s.substr(a, b - a);
   }
 
+  //One top-level object with balanced {} and [], strings closed. Not a full grammar check.
+  static bool balancedObject(const std::string &s) {
+    if (s.empty() || s[0] != '{') return false;
+    std::string stack;
+    bool inString = false;
+    for (size_t i = 0; i < s.size(); i++) {
+      char c = s[i];
+      if (inString) {
+        if (c == '\\') i++;
+        else if (c == '"') inString = false;
+        continue;
+      }
+      if (c == '"') {
+        inString = true;
+      } else if (c == '{' || c == '[') {
+        stack += c;
+        if (c == '{') {  //an object must continue with a key or close
+          size_t j = i + 1;
+          while (j < s.size() && isSpace(s[j])) j++;
+          if (j >= s.size() || (s[j] != '"' && s[j] != '}')) return false;
+        }
+      } else if (c == '}' || c == ']') {
+        if (stack.empty() || stack.back() != (c == '}' ? '{' : '[')) return false;
+        stack.pop_back();
+        if (stack.empty() && i != s.size() - 1) return false;
+      }
+    }
+    return stack.empty() && !inString;
+  }
+
   static bool isSpace(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
 
+  //Unsigned subtraction handles the millis wrap; a negative 32-bit difference means now is behind
+  static unsigned long ageSeconds(const Entry &entry, unsigned long now) {
+    int32_t diff = (int32_t)(uint32_t)(now - entry.fetchedAt);
+    return diff < 0 ? 0 : (unsigned long)diff / 1000;
+  }
+
   static std::string entryJson(const Entry &entry, unsigned long now) {
-    std::string age = entry.hasBody ? std::to_string((now - entry.fetchedAt) / 1000) : "null";
+    std::string age = entry.hasBody ? std::to_string(ageSeconds(entry, now)) : "null";
     std::string error = entry.error.empty() ? "null" : jsonString(entry.error);
     std::string body = entry.hasBody ? entry.body : "null";
     return "{\"age_s\":" + age + ",\"error\":" + error + ",\"none\":" + jsonBool(entry.none) + ",\"body\":" + body + "}";
