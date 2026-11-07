@@ -25,3 +25,11 @@ export function localTime(iso: string | null): string {
   const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/.exec(iso);
   return m ? `${m[1]} ${m[2]}` : iso;
 }
+
+/** Pi report times are UTC ISO strings; show them as local "YYYY-MM-DD HH:MM". */
+export function reportLocalTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return DASH;
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}

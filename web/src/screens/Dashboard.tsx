@@ -3,11 +3,12 @@ import { ApiError, command, getPi, getRanges } from '../api';
 import { MetricCard } from '../components/MetricCard';
 import { Progress } from '../components/Progress';
 import { ReviewPanel } from '../components/ReviewPanel';
-import { DASH, localTime } from '../logic/format';
+import { clock, hasReadings, nextReading } from '../logic/dashboard';
+import { localTime } from '../logic/format';
 import { levelFor, tagsFor } from '../logic/status';
 import { StatusContext } from '../status-context';
 import { usePoll } from '../usePoll';
-import type { MetricStats, PiEntry, PiStatsBody, Ranges } from '../types';
+import type { MetricStats, Ranges } from '../types';
 
 const BUILTIN: Ranges = {
   ph: { valid: [2, 10], target: [5.5, 6.5] },
@@ -15,30 +16,9 @@ const BUILTIN: Ranges = {
   temp: { valid: [30, 99], target: [60, 80] },
 };
 
-function clock(d: Date): string {
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-}
-
-function nextReading(time: string | null, intervalMin: number | null): string {
-  if (!time || !intervalMin) return DASH;
-  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(time);
-  if (!m) return DASH;
-  return clock(new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5] + intervalMin));
-}
-
-function piAgeLine(stats: PiEntry<PiStatsBody> | null, now: number): string | null {
-  if (!stats) return null;
-  if (stats.none || !stats.body) return 'No Pi data yet';
-  if (stats.error && stats.age_s !== null) {
-    const why = stats.error.replace(/^Pi\s+/i, '');
-    return `Pi data from ${clock(new Date(now - stats.age_s * 1000))} · ${why}`;
-  }
-  return null;
-}
-
 export function Dashboard() {
   const { data: status, error, at, refresh } = useContext(StatusContext);
-  const pi = usePoll(getPi, 30000);
+  const pi = usePoll(getPi, 60000);
   const rangesPoll = usePoll(getRanges, 60000);
   const [msg, setMsg] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
@@ -53,7 +33,7 @@ export function Dashboard() {
   const flags = piBody?.flags ?? [];
   const busy = status.cycle.state !== 'idle';
   const stat = (k: 'ph' | 'ec' | 'water_temp_f'): MetricStats | null => piBody?.stats[k] ?? null;
-  const noReadings = !last || last.time === null || status.count === 0;
+  const noReadings = !hasReadings(status);
 
   const take = async () => {
     setSending(true);
@@ -72,7 +52,6 @@ export function Dashboard() {
     { key: 'ec' as const, label: 'EC', unit: 'µS/cm', slopeUnit: 'µS/cm', digits: 0, value: last?.ec ?? null, avg: status.averages.ec, st: stat('ec'), range: ranges.ec },
     { key: 'temp' as const, label: 'Temperature', unit: '°F', slopeUnit: '°F', digits: 1, value: last?.wt ?? null, avg: status.averages.wt, st: stat('water_temp_f'), range: ranges.temp },
   ];
-  const ageLine = piAgeLine(pi.data?.stats ?? null, pi.at ?? Date.now());
 
   return (
     <div class={error ? 'greyed' : ''}>
@@ -103,7 +82,6 @@ export function Dashboard() {
           ))}
         </div>
       )}
-      {ageLine && <p class="muted small">{ageLine}</p>}
       <ReviewPanel report={pi.data?.report ?? null} />
       <div class="actions">
         <button class="primary" disabled={busy || sending || !!error} onClick={take}>

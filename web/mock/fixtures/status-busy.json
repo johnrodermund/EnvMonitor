@@ -30,7 +30,7 @@
     "step": "warmup",
     "job": "reading",
     "warmup_elapsed_ms": 12000,
-    "warmup_ms": 30000,
+    "warmup_ms": 20000,
     "samples": 0,
     "sample_total": 20,
     "ph4_ready": false,
