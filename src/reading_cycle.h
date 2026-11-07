@@ -30,8 +30,10 @@ public:
   virtual void restart() = 0;
 };
 
-enum class CycleCommand { None, TakeReading, Hold, MeasurePh4, MeasurePh7, MeasureManual, Restart, WipeAndRestart };
+enum class CycleCommand { None, TakeReading, Hold, MeasurePh4, MeasurePh7, MeasureManual, Restart, WipeAndRestart, Resume };
 enum class CycleStatus { Idle, Busy, Holding };
+enum class CycleStep { Waiting, Holding, Warmup, Sampling, Restarting };
+enum class CycleJob { Reading, Ph4, Ph7, Manual };
 
 //Owns every reading, calibration and restart transition. request(), status() and
 //setInterval() are safe to call from web handlers, everything else runs in tick().
@@ -93,6 +95,65 @@ public:
     return lastSamples[index];
   }
 
+  CycleStep step() const {
+    switch (phase) {
+      case Phase::Waiting: return CycleStep::Waiting;
+      case Phase::Holding: return CycleStep::Holding;
+      case Phase::PowerOn:
+      case Phase::Warmup: return CycleStep::Warmup;
+      case Phase::Sampling: return CycleStep::Sampling;
+      case Phase::Restarting: return CycleStep::Restarting;
+    }
+    return CycleStep::Waiting;
+  }
+
+  CycleJob job() const {
+    switch (currentJob) {
+      case Job::Reading: return CycleJob::Reading;
+      case Job::Ph4: return CycleJob::Ph4;
+      case Job::Ph7: return CycleJob::Ph7;
+      case Job::Manual: return CycleJob::Manual;
+    }
+    return CycleJob::Reading;
+  }
+
+  //Milliseconds of probe warmup done, 0 outside Warmup
+  unsigned long warmupElapsed(unsigned long now) const {
+    if (phase != Phase::Warmup) {
+      return 0;
+    }
+    unsigned long elapsed = now - warmupStart;
+    return elapsed > warmupTime ? warmupTime : elapsed;
+  }
+
+  static unsigned long warmupMs() {
+    return warmupTime;
+  }
+
+  int samplesTaken() const {
+    return phase == Phase::Sampling ? sampleCount : 0;
+  }
+
+  static int sampleTotalCount() {
+    return sampleTotal;
+  }
+
+  bool ph4Ready() const {
+    return ph4Measured;
+  }
+
+  float pendingPh4() const {
+    return candidatePh4;
+  }
+
+  unsigned manualSeq() const {
+    return manualDone;
+  }
+
+  unsigned calibrationSeq() const {
+    return calibrationDone;
+  }
+
   void tick(unsigned long now) {
     //Commands can spend seconds on hardware, the next tick brings a fresh now
     if (applyCommand(now)) {
@@ -115,6 +176,7 @@ public:
       case Phase::Holding:
         if (now - holdStart > holdTimeout) {
           candidatePh4 = ph4Adc;
+          ph4Measured = false;
           phase = Phase::Waiting;
         }
         break;
@@ -167,17 +229,20 @@ private:
 
   std::atomic<CycleCommand> pending{ CycleCommand::TakeReading };
   volatile Phase phase = Phase::Waiting;
-  Job job = Job::Reading;
+  volatile Job currentJob = Job::Reading;
+  volatile bool ph4Measured = false;
+  volatile unsigned manualDone = 0;
+  volatile unsigned calibrationDone = 0;
   Reading current;
   Reading manual;
   float samples[sampleTotal];
-  int sampleCount = 0;
+  volatile int sampleCount = 0;
   unsigned long lastSampleAt = 0;
   float lastSamples[sampleTotal] = {};
   int lastCount = 0;
   float lastAdc = 0;
   unsigned long lastReadingStart = 0;
-  unsigned long warmupStart = 0;
+  volatile unsigned long warmupStart = 0;
   unsigned long holdStart = 0;
   unsigned long restartStart = 0;
 
@@ -197,8 +262,16 @@ private:
         startReading(now);
         break;
 
+      case CycleCommand::Resume:
+        candidatePh4 = ph4Adc;
+        ph4Measured = false;
+        lastReadingStart = now;
+        phase = Phase::Waiting;
+        break;
+
       case CycleCommand::Hold:
         candidatePh4 = ph4Adc;
+        ph4Measured = false;
         lastReadingStart = now;
         enterHold(now);
         break;
@@ -241,7 +314,7 @@ private:
   }
 
   void startMeasurement(Job newJob) {
-    job = newJob;
+    currentJob = newJob;
     phase = Phase::PowerOn;
   }
 
@@ -267,7 +340,7 @@ private:
     lastCount = sampleTotal;
     lastAdc = phAdc;
 
-    switch (job) {
+    switch (currentJob) {
       case Job::Reading:
         current.timestamp = host.timestamp();
         current.ph = phFromAdc(phAdc, ph4Adc, ph7Adc);
@@ -278,6 +351,7 @@ private:
 
       case Job::Ph4:
         candidatePh4 = phAdc;
+        ph4Measured = true;
         enterHold(now);
         break;
 
@@ -285,6 +359,8 @@ private:
         ph4Adc = candidatePh4;
         ph7Adc = phAdc;
         host.saveCalibration(ph4Adc, ph7Adc);
+        ph4Measured = false;
+        calibrationDone = calibrationDone + 1;
         phase = Phase::Waiting;
         break;
 
@@ -293,6 +369,7 @@ private:
         manual.ph = phFromAdc(phAdc, ph4Adc, ph7Adc);
         manual.ec = host.readEc();
         manual.wt = host.readTemperature();
+        manualDone = manualDone + 1;
         phase = Phase::Waiting;
         break;
     }

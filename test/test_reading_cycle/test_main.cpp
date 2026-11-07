@@ -1,66 +1,11 @@
 #include <vector>
 #include <unity.h>
 #include "reading_cycle.h"
+#include "../fake_host.h"
 
 const unsigned long interval = 600000;
 const unsigned long holdTimeout = 900000;
 const unsigned long oneMeasurement = 23000;
-
-struct FakeHost : CycleHost {
-  std::vector<Reading> recorded;
-  std::vector<float> adcSamples = {2124};
-  size_t nextSample = 0;
-  bool phPower = false;
-  float savedPh4 = 0;
-  float savedPh7 = 0;
-  bool wiped = false;
-  bool restarted = false;
-  unsigned long *clock = nullptr;  //when set, EC and relay calls take as long as real hardware
-  ReadingCycle *watched = nullptr;
-  std::vector<CycleStatus> statusDuringHardware;
-  unsigned long powerOnAt = 0;
-  unsigned long firstSampleAt = 0;
-  std::vector<unsigned long> sampleTimes;
-
-  void spendTime(unsigned long duration) {
-    if (clock) {
-      *clock += duration;
-    }
-    if (watched) {
-      statusDuringHardware.push_back(watched->status());
-    }
-  }
-
-  float readTemperature() override { return 68; }
-  float readEc() override {
-    spendTime(2000);
-    return 400;
-  }
-  float readPhAdc() override {
-    if (nextSample == 0 && clock) {
-      firstSampleAt = *clock;
-    }
-    if (clock) {
-      sampleTimes.push_back(*clock);
-    }
-    return adcSamples[nextSample++ % adcSamples.size()];
-  }
-  void setPhPower(bool on) override {
-    if (on && clock) {
-      powerOnAt = *clock;
-    }
-    phPower = on;
-    spendTime(500);
-  }
-  std::string timestamp() override { return "t"; }
-  void recordReading(const Reading &reading) override { recorded.push_back(reading); }
-  void saveCalibration(float ph4, float ph7) override {
-    savedPh4 = ph4;
-    savedPh7 = ph7;
-  }
-  void wipeReadings() override { wiped = true; }
-  void restart() override { restarted = true; }
-};
 
 void run(ReadingCycle &cycle, unsigned long &now, unsigned long duration, unsigned long step = 100) {
   unsigned long end = now + duration;
@@ -331,6 +276,123 @@ void ph_samples_are_spaced_so_the_adc_can_recover() {
   }
 }
 
+void resume_ends_hold_without_a_reading() {
+  FakeHost host;
+  ReadingCycle cycle(host, 2368, 1880, interval, holdTimeout);
+  unsigned long now = 0;
+  run(cycle, now, oneMeasurement);
+  cycle.request(CycleCommand::Hold);
+  run(cycle, now, 200);
+  TEST_ASSERT_TRUE(cycle.status() == CycleStatus::Holding);
+  size_t before = host.recorded.size();
+
+  cycle.request(CycleCommand::Resume);
+  run(cycle, now, 200);
+
+  TEST_ASSERT_TRUE(cycle.status() == CycleStatus::Idle);
+  TEST_ASSERT_TRUE(cycle.step() == CycleStep::Waiting);
+  TEST_ASSERT_EQUAL_INT(before, host.recorded.size());
+}
+
+void resume_during_sampling_powers_off_and_discards() {
+  FakeHost host;
+  ReadingCycle cycle(host, 2368, 1880, interval, holdTimeout);
+  unsigned long now = 0;
+  run(cycle, now, 21000);
+  TEST_ASSERT_TRUE(host.phPower);
+
+  cycle.request(CycleCommand::Resume);
+  run(cycle, now, oneMeasurement);
+
+  TEST_ASSERT_FALSE(host.phPower);
+  TEST_ASSERT_EQUAL_INT(0, host.recorded.size());
+}
+
+void step_and_progress_follow_the_reading() {
+  FakeHost host;
+  ReadingCycle cycle(host, 2368, 1880, interval, holdTimeout);
+  unsigned long now = 0;
+  TEST_ASSERT_TRUE(cycle.step() == CycleStep::Waiting);
+  TEST_ASSERT_TRUE(cycle.job() == CycleJob::Reading);
+
+  cycle.tick(now);  //applies the pending reading, entering PowerOn
+  now += 100;
+  cycle.tick(now);  //PowerOn becomes Warmup
+  unsigned long warmupBegan = now;
+  TEST_ASSERT_TRUE(cycle.step() == CycleStep::Warmup);
+  TEST_ASSERT_EQUAL_UINT32(0, cycle.warmupElapsed(now));
+
+  now = warmupBegan + 12000;
+  cycle.tick(now);
+  TEST_ASSERT_EQUAL_UINT32(12000, cycle.warmupElapsed(now));
+  TEST_ASSERT_EQUAL_UINT32(20000, ReadingCycle::warmupMs());
+  TEST_ASSERT_EQUAL_INT(20, ReadingCycle::sampleTotalCount());
+
+  now = warmupBegan + 20100;
+  cycle.tick(now);
+  TEST_ASSERT_TRUE(cycle.step() == CycleStep::Sampling);
+  TEST_ASSERT_EQUAL_UINT32(0, cycle.warmupElapsed(now));
+
+  int last = 0;
+  for (int i = 0; i < 40 && cycle.step() == CycleStep::Sampling; i++) {
+    now += 100;
+    cycle.tick(now);
+    if (cycle.step() != CycleStep::Sampling) {
+      break;
+    }
+    TEST_ASSERT_TRUE(cycle.samplesTaken() >= last);
+    last = cycle.samplesTaken();
+  }
+  TEST_ASSERT_EQUAL_INT(20, last);
+  now += 100;
+  cycle.tick(now);
+  TEST_ASSERT_EQUAL_INT(0, cycle.samplesTaken());
+}
+
+void ph4_ready_only_after_ph4_measurement() {
+  FakeHost host;
+  ReadingCycle cycle(host, 2368, 1880, interval, holdTimeout);
+  unsigned long now = 0;
+  run(cycle, now, oneMeasurement);
+
+  cycle.request(CycleCommand::Hold);
+  run(cycle, now, 200);
+  TEST_ASSERT_FALSE(cycle.ph4Ready());
+
+  host.adcSamples = {2400};
+  cycle.request(CycleCommand::MeasurePh4);
+  run(cycle, now, oneMeasurement);
+  TEST_ASSERT_TRUE(cycle.ph4Ready());
+  TEST_ASSERT_EQUAL_FLOAT(2400, cycle.pendingPh4());
+
+  cycle.request(CycleCommand::Resume);
+  run(cycle, now, 200);
+  TEST_ASSERT_FALSE(cycle.ph4Ready());
+  TEST_ASSERT_EQUAL_FLOAT(2368, cycle.pendingPh4());
+}
+
+void manual_and_calibration_seq_increment() {
+  FakeHost host;
+  ReadingCycle cycle(host, 2368, 1880, interval, holdTimeout);
+  unsigned long now = 0;
+  run(cycle, now, oneMeasurement);
+  unsigned manual0 = cycle.manualSeq();
+  unsigned cal0 = cycle.calibrationSeq();
+
+  cycle.request(CycleCommand::MeasureManual);
+  run(cycle, now, oneMeasurement);
+  TEST_ASSERT_EQUAL_UINT32(manual0 + 1, cycle.manualSeq());
+  TEST_ASSERT_EQUAL_UINT32(cal0, cycle.calibrationSeq());
+
+  cycle.request(CycleCommand::Hold);
+  cycle.request(CycleCommand::MeasurePh4);
+  run(cycle, now, oneMeasurement);
+  cycle.request(CycleCommand::MeasurePh7);
+  run(cycle, now, oneMeasurement);
+  TEST_ASSERT_EQUAL_UINT32(cal0 + 1, cycle.calibrationSeq());
+  TEST_ASSERT_EQUAL_UINT32(manual0 + 1, cycle.manualSeq());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(boot_takes_a_first_reading_and_records_it_complete);
@@ -351,5 +413,10 @@ int main() {
   RUN_TEST(status_stays_busy_while_a_held_measurement_starts);
   RUN_TEST(last_ph_samples_and_average_are_kept_for_diagnostics);
   RUN_TEST(ph_samples_are_spaced_so_the_adc_can_recover);
+  RUN_TEST(resume_ends_hold_without_a_reading);
+  RUN_TEST(resume_during_sampling_powers_off_and_discards);
+  RUN_TEST(step_and_progress_follow_the_reading);
+  RUN_TEST(ph4_ready_only_after_ph4_measurement);
+  RUN_TEST(manual_and_calibration_seq_increment);
   return UNITY_END();
 }
