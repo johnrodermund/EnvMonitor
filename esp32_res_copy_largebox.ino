@@ -81,6 +81,13 @@ unsigned long apiDelivered = 0;
 unsigned long apiRejected = 0;
 unsigned long apiNoClock = 0;
 
+//Saved API settings as handlers see them; defined up here because the .ino prototypes need it
+struct SavedApiConfig {
+  String url;
+  String device;
+  bool tokenSet;
+};
+
 // Webserver
 AsyncWebServer server(80);
 String PARAM_MESSAGE = "status";
@@ -271,19 +278,33 @@ void loadApiConfig() {
   apiPrefs.end();
 }
 
+//Read from NVS so handlers never touch apiUrl and friends, which loop() reloads
+SavedApiConfig readSavedApiConfig() {
+  SavedApiConfig saved;
+  Preferences apiPrefs;
+  apiPrefs.begin("api", true);
+  saved.url = apiPrefs.getString("url", "");
+  saved.device = apiPrefs.getString("device", "envmonitor-1");
+  saved.tokenSet = apiPrefs.getString("token", "").length() > 0;
+  apiPrefs.end();
+  return saved;
+}
+
 String apiStatus() {
   xSemaphoreTake(apiQueueLock, portMAX_DELAY);
   int queued = apiQueue.size();
   int dropped = apiQueue.dropped();
   xSemaphoreGive(apiQueueLock);
-  return "api url=" + (apiUrl.length() ? apiUrl : String("(not set)")) + " token=" + (apiToken.length() ? "set" : "not set") +
-         " device=" + apiDevice + "\napi queued=" + String(queued) + " delivered=" + String(apiDelivered) +
+  SavedApiConfig saved = readSavedApiConfig();
+  return "api url=" + (saved.url.length() ? saved.url : String("(not set)")) + " token=" + (saved.tokenSet ? "set" : "not set") +
+         " device=" + saved.device + "\napi queued=" + String(queued) + " delivered=" + String(apiDelivered) +
          " rejected=" + String(apiRejected) + " dropped=" + String(dropped) + " skipped_no_clock=" + String(apiNoClock) +
          " last_http=" + String(apiLastCode) + " failures=" + String(apiFailures) + "\n";
 }
 
-//Sends the oldest queued reading, one per call, backing off while the API is unreachable
-void sendQueuedReading() {
+//Sends the oldest queued reading, one per call, backing off while the API is unreachable.
+//Returns true when it made an HTTP request.
+bool sendQueuedReading() {
   if (apiConfigChanged) {
     apiConfigChanged = false;
     loadApiConfig();
@@ -295,10 +316,10 @@ void sendQueuedReading() {
     xSemaphoreGive(piCacheLock);
   }
   if (apiUrl.length() == 0 || apiToken.length() == 0 || WiFi.status() != WL_CONNECTED) {
-    return;
+    return false;
   }
   if (apiNextAttempt != 0 && (long)(millis() - apiNextAttempt) < 0) {
-    return;
+    return false;
   }
   xSemaphoreTake(apiQueueLock, portMAX_DELAY);
   bool empty = apiQueue.size() == 0;
@@ -308,7 +329,7 @@ void sendQueuedReading() {
   }
   xSemaphoreGive(apiQueueLock);
   if (empty) {
-    return;
+    return false;
   }
 
   HTTPClient http;
@@ -324,7 +345,7 @@ void sendQueuedReading() {
   if (outcome == SendOutcome::RetryLater) {
     apiFailures++;
     apiNextAttempt = millis() + retryDelayMs(apiFailures);
-    return;
+    return true;
   }
   if (outcome == SendOutcome::Delivered) {
     apiDelivered++;
@@ -339,43 +360,82 @@ void sendQueuedReading() {
     apiQueue.pop();
   }
   xSemaphoreGive(apiQueueLock);
+  return true;
+}
+
+const unsigned long piBodyDeadline = 3000;  //ms to read a whole Pi reply body
+
+//Reads a Pi reply body of `size` bytes (-1 when unknown: read until the server closes), keeping at
+//most cap + 1 bytes in memory. Returns false when the body is longer than cap.
+bool readPiBody(HTTPClient &http, int size, size_t cap, std::string &body) {
+  WiFiClient *stream = http.getStreamPtr();
+  size_t limit = (size >= 0 && (size_t)size <= cap) ? (size_t)size : cap + 1;
+  body.reserve(limit);
+  uint8_t buffer[256];
+  unsigned long start = millis();
+  while (stream && body.size() < limit && millis() - start < piBodyDeadline) {
+    int available = stream->available();
+    if (available <= 0) {
+      if (!stream->connected()) {
+        break;
+      }
+      delay(1);
+      continue;
+    }
+    size_t want = min(min((size_t)available, sizeof(buffer)), limit - body.size());
+    int got = stream->read(buffer, want);
+    if (got > 0) {
+      body.append((const char *)buffer, got);
+    }
+  }
+  return body.size() <= cap;
 }
 
 //Fetches one Pi endpoint per call, every PiCache::ROUND_MS. The lock is never held across the GET.
 void fetchPiCache() {
-  if (apiUrl.length() == 0 || apiToken.length() == 0) {
-    xSemaphoreTake(piCacheLock, portMAX_DELAY);
-    piCache.markUnconfigured();
-    xSemaphoreGive(piCacheLock);
-    return;
-  }
+  bool configured = apiUrl.length() > 0 && apiToken.length() > 0;
   xSemaphoreTake(piCacheLock, portMAX_DELAY);
   bool due = piCache.due(millis());
   PiEndpoint endpoint = PiEndpoint::Stats;
   if (due) {
     endpoint = piCache.next();
+    if (!configured) {
+      piCache.markUnconfigured();
+    }
   }
   xSemaphoreGive(piCacheLock);
-  if (!due) {
+  if (!due || !configured) {
     return;
   }
 
   HTTPClient http;
   http.setConnectTimeout(3000);
   http.setTimeout(3000);
+  http.useHTTP10(true);  //no chunked encoding, so the raw stream is the body
   http.begin(apiUrl + piPath(endpoint, apiDevice.c_str()).c_str());
   http.addHeader("Authorization", "Bearer " + apiToken);
   int code = http.GET();
-  String body = code == 200 ? http.getString() : String();
+  bool tooLarge = false;
+  std::string body;
+  if (code == 200) {
+    size_t cap = PiCache::bodyCap(endpoint);
+    int size = http.getSize();
+    tooLarge = size > (int)cap || !readPiBody(http, size, cap, body);
+  }
   http.end();
 
   xSemaphoreTake(piCacheLock, portMAX_DELAY);
-  piCache.record(endpoint, code, body.c_str(), millis());
+  if (tooLarge) {
+    piCache.recordTooLarge(endpoint, millis());
+  } else {
+    piCache.record(endpoint, code, body, millis());
+  }
   xSemaphoreGive(piCacheLock);
 }
 
 //Writes settings queued by POST /api/settings. Copies them out first: writeFile blocks for 2 s.
-void savePendingSettings() {
+//Returns true when it wrote a file.
+bool savePendingSettings() {
   xSemaphoreTake(settingsLock, portMAX_DELAY);
   bool saveTitle = hasPendingTitle;
   bool saveInterval = hasPendingInterval;
@@ -391,27 +451,32 @@ void savePendingSettings() {
   if (saveTitle) {
     writeFile("/title.txt", newTitle.c_str());
   }
+  return saveInterval || saveTitle;
 }
 
-//Saves readings API settings to NVS. A field whose has* flag is false is left unchanged.
-//Returns an error message, or "" when saved.
-String saveApiConfig(bool hasUrl, String url, bool hasToken, const String &token, bool hasDevice, const String &device) {
+String withoutTrailingSlashes(String url) {
   while (url.endsWith("/")) {
     url.remove(url.length() - 1);
   }
-  if (hasUrl && url.length() && !url.startsWith("http://")) {
+  return url;
+}
+
+//Saves readings API settings to NVS. A null field is left unchanged; the url must already have
+//its trailing slashes removed. Returns an error message, or "" when saved.
+String saveApiConfig(const String *url, const String *token, const String *device) {
+  if (url && url->length() && !url->startsWith("http://")) {
     return "url must start with http://";
   }
   Preferences apiPrefs;
   apiPrefs.begin("api", false);
-  if (hasUrl) {
-    apiPrefs.putString("url", url);
+  if (url) {
+    apiPrefs.putString("url", *url);
   }
-  if (hasToken) {
-    apiPrefs.putString("token", token);
+  if (token) {
+    apiPrefs.putString("token", *token);
   }
-  if (hasDevice) {
-    apiPrefs.putString("device", device);
+  if (device) {
+    apiPrefs.putString("device", *device);
   }
   apiPrefs.end();
   apiConfigChanged = true;
@@ -638,30 +703,29 @@ void registerApiRoutes() {
 
   server.on("/api/ranges", HTTP_DELETE, [](AsyncWebServerRequest *request) {
     Preferences rangePrefs;
-    rangePrefs.begin("ranges", false);
-    rangePrefs.remove("json");
+    if (!rangePrefs.begin("ranges", false)) {
+      sendError(request, 500, "could not clear device ranges");
+      return;
+    }
+    rangePrefs.remove("json");  //a missing key is fine: nothing to clear
     rangePrefs.end();
     sendOk(request);
   });
 
-  //Reads NVS rather than apiUrl and friends, which loop() reloads
   server.on("/api/apiconfig", HTTP_GET, [](AsyncWebServerRequest *request) {
-    Preferences apiPrefs;
-    apiPrefs.begin("api", true);
-    String url = apiPrefs.getString("url", "");
-    String device = apiPrefs.getString("device", "envmonitor-1");
-    bool tokenSet = apiPrefs.getString("token", "").length() > 0;
-    apiPrefs.end();
-    sendJson(request, 200, "{\"url\":" + jsonString(url.c_str()) + ",\"device\":" + jsonString(device.c_str()) +
-                               ",\"token_set\":" + jsonBool(tokenSet) + "}");
+    SavedApiConfig saved = readSavedApiConfig();
+    sendJson(request, 200, "{\"url\":" + jsonString(saved.url.c_str()) + ",\"device\":" + jsonString(saved.device.c_str()) +
+                               ",\"token_set\":" + jsonBool(saved.tokenSet) + "}");
   });
 
-  //An empty field means "not provided": the app always sends url and device
+  //An empty field means "not provided": the app always sends url and device.
+  //Slashes are stripped first, so url "/" also counts as not provided.
   server.on("/api/apiconfig", HTTP_POST, [](AsyncWebServerRequest *request) {
-    String url = formValue(request, "url");
+    String url = withoutTrailingSlashes(formValue(request, "url"));
     String token = formValue(request, "token");
     String device = formValue(request, "device");
-    String error = saveApiConfig(url.length() > 0, url, token.length() > 0, token, device.length() > 0, device);
+    String error = saveApiConfig(url.length() ? &url : nullptr, token.length() ? &token : nullptr,
+                                 device.length() ? &device : nullptr);
     if (error.length()) {
       sendError(request, 400, error.c_str());
       return;
@@ -814,9 +878,12 @@ void setup() {
 
   server.on("/apiconfig", HTTP_POST, [](AsyncWebServerRequest *request) {
     //Unlike /api/apiconfig, an empty url or token here clears it
-    String error = saveApiConfig(request->hasParam("url", true), formValue(request, "url"), request->hasParam("token", true),
-                                 formValue(request, "token"), formValue(request, "device").length() > 0,
-                                 formValue(request, "device"));
+    String url = withoutTrailingSlashes(formValue(request, "url"));
+    String token = formValue(request, "token");
+    String device = formValue(request, "device");
+    String error = saveApiConfig(request->hasParam("url", true) ? &url : nullptr,
+                                 request->hasParam("token", true) ? &token : nullptr,
+                                 device.length() ? &device : nullptr);
     if (error.length()) {
       request->send(400, "text/plain", error);
       return;
@@ -947,9 +1014,15 @@ void runSettleTest() {
 void loop() {
   ArduinoOTA.handle();
   runSettleTest();
-  sendQueuedReading();
-  fetchPiCache();
-  savePendingSettings();
+  //At most one slow step per pass: an upload, a settings write or one Pi fetch.
+  //A skipped fetch stays due, so it runs on a later pass.
+  bool didSlowWork = sendQueuedReading();
+  if (!didSlowWork) {
+    didSlowWork = savePendingSettings();
+  }
+  if (!didSlowWork) {
+    fetchPiCache();
+  }
   delay(2);  //single core: loop() outranks loop2, so it must yield or sampling starves
 }
 

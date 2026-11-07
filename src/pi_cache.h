@@ -47,6 +47,17 @@ public:
     return e;
   }
 
+  //Largest body kept per endpoint, so the sketch can refuse bigger replies before reading them
+  static size_t bodyCap(PiEndpoint e) { return capFor(e); }
+
+  //A 200 reply whose body was over bodyCap and was not read. Keeps the previous body, like record().
+  void recordTooLarge(PiEndpoint e, unsigned long now) {
+    (void)now;
+    Entry &entry = entries_[(int)e];
+    entry.none = false;
+    entry.error = "reply too large";
+  }
+
   void record(PiEndpoint e, int httpCode, const std::string &body, unsigned long now) {
     Entry &entry = entries_[(int)e];
     if (httpCode == 200) {

@@ -154,6 +154,29 @@ void age_clamps_to_zero_when_now_is_behind(void) {
   TEST_ASSERT_NOT_EQUAL(std::string::npos, cache.json(4000).find("\"age_s\":0,"));
 }
 
+void body_caps_are_public_per_endpoint(void) {
+  TEST_ASSERT_EQUAL(6144, (int)PiCache::bodyCap(PiEndpoint::Stats));
+  TEST_ASSERT_EQUAL(4096, (int)PiCache::bodyCap(PiEndpoint::Report));
+  TEST_ASSERT_EQUAL(2048, (int)PiCache::bodyCap(PiEndpoint::Thresholds));
+}
+
+void too_large_without_body_keeps_previous_reply(void) {
+  PiCache cache;
+  cache.record(PiEndpoint::Report, 200, "{\"a\":1}", 1000);
+  cache.recordTooLarge(PiEndpoint::Report, 4000);
+  std::string json = cache.json(4000);
+  TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                        json.find("\"report\":{\"age_s\":3,\"error\":\"reply too large\",\"none\":false,\"body\":{\"a\":1}}"));
+}
+
+void too_large_clears_none(void) {
+  PiCache cache;
+  cache.record(PiEndpoint::Report, 404, "", 0);
+  cache.recordTooLarge(PiEndpoint::Report, 0);
+  TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                        cache.json(0).find("\"report\":{\"age_s\":null,\"error\":\"reply too large\",\"none\":false"));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(first_call_is_due_and_rounds_cycle_three_endpoints);
@@ -170,5 +193,8 @@ int main() {
   RUN_TEST(accepts_nested_body_with_braces_and_quotes_in_strings);
   RUN_TEST(none_clears_after_later_failure);
   RUN_TEST(age_clamps_to_zero_when_now_is_behind);
+  RUN_TEST(body_caps_are_public_per_endpoint);
+  RUN_TEST(too_large_without_body_keeps_previous_reply);
+  RUN_TEST(too_large_clears_none);
   return UNITY_END();
 }
