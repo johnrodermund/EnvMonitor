@@ -4,7 +4,7 @@ import { MetricCard } from '../components/MetricCard';
 import { Progress } from '../components/Progress';
 import { ReviewPanel } from '../components/ReviewPanel';
 import { clock, hasReadings, nextReading } from '../logic/dashboard';
-import { localTime } from '../logic/format';
+import { fmt, localTime } from '../logic/format';
 import { BUILTIN_RANGES, levelFor, tagsFor } from '../logic/status';
 import { StatusContext } from '../status-context';
 import { usePoll } from '../usePoll';
@@ -34,6 +34,18 @@ export function Dashboard() {
     setMsg(null);
     try {
       await command('reading');
+    } catch (e) {
+      setMsg(e instanceof ApiError ? e.message : 'Request failed');
+    }
+    setSending(false);
+    refresh();
+  };
+
+  const resume = async () => {
+    setSending(true);
+    setMsg(null);
+    try {
+      await command('cancel');
     } catch (e) {
       setMsg(e instanceof ApiError ? e.message : 'Request failed');
     }
@@ -72,6 +84,7 @@ export function Dashboard() {
               slopePerHour={c.st?.slope_per_hour ?? null}
               level={levelFor(c.value, c.range)}
               tags={tagsFor(c.key, flags)}
+              extra={c.key === 'ph' && last?.ph_pm != null ? `± ${fmt(last.ph_pm, 2)}` : null}
             />
           ))}
         </div>
@@ -81,6 +94,11 @@ export function Dashboard() {
         <button class="primary" disabled={busy || sending || !!error} onClick={take}>
           Take reading now
         </button>
+        {status.cycle.state === 'holding' && (
+          <button disabled={sending || !!error} onClick={resume}>
+            Resume readings
+          </button>
+        )}
         {busy && <span class="muted small">Device is busy</span>}
         {msg && <span class="err small">{msg}</span>}
       </div>

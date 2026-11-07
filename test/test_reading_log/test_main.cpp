@@ -31,6 +31,17 @@ std::string rows(const ReadingLog<N> &log) {
   return text;
 }
 
+void save_text_is_what_save_writes() {
+  MemoryStore store;
+  ReadingLog<3> log;
+  log.append("t1", 7.01, 10, 100);
+  log.append("", 7.03, 20, 200);
+  log.save(store);
+
+  TEST_ASSERT_EQUAL_STRING(store.files[ReadingLog<3>::path()].c_str(), log.saveText().c_str());
+  TEST_ASSERT_TRUE(log.saveText().size() > 0);
+}
+
 void full_log_drops_oldest_reading_from_every_series() {
   ReadingLog<2> log;
   log.append("t1", 1, 10, 100);
@@ -138,6 +149,7 @@ void missing_files_start_an_empty_log() {
 int main() {
   UNITY_BEGIN();
   RUN_TEST(full_log_drops_oldest_reading_from_every_series);
+  RUN_TEST(save_text_is_what_save_writes);
   RUN_TEST(saved_log_restores_timestamps_and_statistics);
   RUN_TEST(reading_without_a_timestamp_survives_a_restart_in_position);
   RUN_TEST(save_cut_short_keeps_every_complete_reading);

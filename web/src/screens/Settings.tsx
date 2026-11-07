@@ -60,6 +60,7 @@ export function Settings() {
     const r = await getRanges();
     setRanges(r);
     setRText(rangesToText(r.ranges));
+    return r;
   };
   const loadApi = async () => {
     const c = await getApiConfig();
@@ -117,21 +118,25 @@ export function Settings() {
       'Saved as device ranges',
     );
   };
-  const usePi = () =>
-    run(
-      'ranges',
-      async () => {
-        await resetRanges();
-        await loadRanges();
-      },
-      'Now using Pi ranges',
-    );
+  const usePi = async () => {
+    try {
+      await resetRanges();
+      const r = await loadRanges();
+      note(
+        'ranges',
+        null,
+        r.source === 'pi' ? 'Now using Pi ranges' : 'Now using built-in ranges (no Pi ranges available)',
+      );
+    } catch (e) {
+      note('ranges', why(e));
+    }
+  };
   const savePi = () =>
     run('api', async () => {
       // An empty token field means keep the stored token, so send none.
       const t = token;
-      setToken('');
       await saveApiConfig({ url: url.trim(), device: device.trim(), ...(t ? { token: t } : {}) });
+      setToken('');
       await loadApi();
     });
   const restart = () => {
@@ -246,7 +251,7 @@ export function Settings() {
         <div class="modal" role="dialog" aria-modal="true" aria-labelledby="reset-h">
           <div class="modal-box">
             <h2 id="reset-h">Reset data</h2>
-            <p>This erases logged readings, calibration and settings on the device. It cannot be undone. Type RESET to confirm.</p>
+            <p>This erases all logged readings and restarts the device. Calibration and settings are kept. It cannot be undone. Type RESET to confirm.</p>
             <input type="text" aria-label="Type RESET" autocomplete="off" value={typed} onInput={(e) => setTyped(val(e))} />
             <div class="actions">
               <button class="danger" disabled={typed !== 'RESET'} onClick={doReset}>

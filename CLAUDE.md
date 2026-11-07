@@ -22,7 +22,7 @@ Pinout: DS18B20 on GPIO 8, relay on GPIO 1, pH and EC on GPIO 3 (`sensorPin`). T
 
 Three execution contexts share globals. Four FreeRTOS mutexes guard the shared state the handlers touch (see Locks below):
 
-- `loop()` services OTA, the settle test and the readings API upload, then yields with `delay(2)`. The ESP32-C3 has one core and `loop()` runs at a higher priority than `loop2()`, so without that yield sampling starves and a reading takes minutes.
+- `loop()` services OTA and the settle test, then runs at most one slow step per pass (the readings API upload, else the pending settings write, else one Pi fetch), then yields with `delay(2)`. The ESP32-C3 has one core and `loop()` runs at a higher priority than `loop2()`, so without that yield sampling starves and a reading takes minutes.
 - `loop2()`, a FreeRTOS task, calls `ReadingCycle::tick()`, which does all sensor work.
 - `AsyncWebServer` handlers use only `request()`, `status()` and read accessors on the cycle. Keep slow work out of handlers: they copy data under a lock or queue work for `loop()`, and `loop()` runs at most one slow step per pass (a Pi fetch, an API upload or a settings write).
 
@@ -34,7 +34,7 @@ Pi cache: `PiCache` (`src/pi_cache.h`) holds the last replies from the Pi's `/st
 
 Device ranges: colour ranges come from the Pi's thresholds by default. `POST /api/ranges` stores device ranges in NVS (namespace `ranges`, key `json`), which override the Pi's for the page only; `DELETE /api/ranges` ("Use Pi ranges") removes them. `/api/ranges` reports the source (`device`, `pi` or `builtin`). Device ranges never reach the Pi.
 
-Locks: `settingsLock` (title, interval and their pending-save flags), `readingsLock` (`readings` and `lastPhUncertainty`), `piCacheLock` and `apiQueueLock`. Take them with `portMAX_DELAY`, hold them only to copy data, and never do I/O while holding one.
+Locks: `settingsLock` (title, interval and their pending-save flags), `readingsLock` (`readings` and `lastPhUncertainty`), `piCacheLock` and `apiQueueLock`. Take them with `portMAX_DELAY`, hold them only to copy data, and never do I/O while holding one. The reading save follows this: `DeviceHost::recordReading()` and `wipeReadings()` build the file text with `ReadingLog::saveText()` under `readingsLock`, release it, then write it through `LittleFsStore`. Device ranges live in a RAM copy under `settingsLock` (loaded once at boot), so `GET /api/ranges` never opens NVS.
 
 `ReadingLog` in `src/reading_log.h` takes one complete reading at a time, so its series stay aligned, and it saves all 200 entries to `/readings.txt` through a store adapter. Boot replays that file's rows to rebuild statistics. If the file is missing, it migrates the old `/phdata.txt`, `/ecdata.txt`, `/wtdata.txt` and `/datetime.txt` files, which is the only remaining use of `src/stats_file.h`.
 

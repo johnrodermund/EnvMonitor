@@ -224,8 +224,9 @@ public:
     xSemaphoreTake(readingsLock, portMAX_DELAY);
     readings.append(reading.timestamp, reading.ph, reading.ec, reading.wt);
     lastPhUncertainty = reading.phUncertainty;
-    readings.save(readingStore);
+    std::string text = readings.saveText();
     xSemaphoreGive(readingsLock);
+    readingStore.write(readings.path(), text);  //the flash write happens outside the lock
     queueForApi(reading);
   }
 
@@ -257,8 +258,9 @@ public:
     xSemaphoreTake(readingsLock, portMAX_DELAY);
     readings.clear();
     lastPhUncertainty = 0;
-    readings.save(readingStore);
+    std::string text = readings.saveText();
     xSemaphoreGive(readingsLock);
+    readingStore.write(readings.path(), text);
   }
 
   void restart() override {
@@ -437,19 +439,22 @@ void fetchPiCache() {
 //Returns true when it wrote a file.
 bool savePendingSettings() {
   xSemaphoreTake(settingsLock, portMAX_DELAY);
+  //One file per pass: the title first, the interval on the next pass
   bool saveTitle = hasPendingTitle;
-  bool saveInterval = hasPendingInterval;
+  bool saveInterval = hasPendingInterval && !saveTitle;
   String newTitle = pendingTitle;
   unsigned long newInterval = pendingInterval;
-  hasPendingTitle = false;
-  hasPendingInterval = false;
-  xSemaphoreGive(settingsLock);
-  if (saveInterval) {
-    cycle.setInterval(newInterval);
-    writeFile("/interval0.txt", String(newInterval).c_str());
+  if (saveTitle) {
+    hasPendingTitle = false;
+  } else if (saveInterval) {
+    hasPendingInterval = false;
   }
+  xSemaphoreGive(settingsLock);
   if (saveTitle) {
     writeFile("/title.txt", newTitle.c_str());
+  } else if (saveInterval) {
+    cycle.setInterval(newInterval);
+    writeFile("/interval0.txt", String(newInterval).c_str());
   }
   return saveInterval || saveTitle;
 }
@@ -533,7 +538,7 @@ std::string statusText() {
   s.title = title.c_str();
   s.intervalMin = interval0 / 60000;
   xSemaphoreGive(settingsLock);
-  s.uptimeS = millis() / 1000;
+  s.uptimeS = (unsigned long)(esp_timer_get_time() / 1000000);
   s.freeHeap = ESP.getFreeHeap();
 
   xSemaphoreTake(readingsLock, portMAX_DELAY);
@@ -589,7 +594,12 @@ std::string statusText() {
   return statusJson(s);
 }
 
-//Device ranges saved by POST /api/ranges, as rangesJson text in NVS
+//RAM copy of the device ranges, loaded once at boot and updated by POST and DELETE /api/ranges,
+//so GET never opens NVS. Guarded by settingsLock.
+Ranges deviceRanges;
+bool hasDeviceRanges = false;
+
+//Device ranges saved by POST /api/ranges, as rangesJson text in NVS. Called at boot only.
 bool loadDeviceRanges(Ranges &out) {
   Preferences rangePrefs;
   if (!rangePrefs.begin("ranges", true)) {
@@ -603,7 +613,12 @@ bool loadDeviceRanges(Ranges &out) {
 
 std::string rangesText() {
   Ranges device, pi, chosen;
-  bool hasDevice = loadDeviceRanges(device);
+  xSemaphoreTake(settingsLock, portMAX_DELAY);
+  bool hasDevice = hasDeviceRanges;
+  if (hasDevice) {
+    device = deviceRanges;
+  }
+  xSemaphoreGive(settingsLock);
   std::string piText;
   xSemaphoreTake(piCacheLock, portMAX_DELAY);
   bool hasPiText = piCache.thresholdsBody(piText);
@@ -698,6 +713,10 @@ void registerApiRoutes() {
       sendError(request, 500, "could not save ranges");
       return;
     }
+    xSemaphoreTake(settingsLock, portMAX_DELAY);
+    deviceRanges = ranges;
+    hasDeviceRanges = true;
+    xSemaphoreGive(settingsLock);
     sendOk(request);
   });
 
@@ -709,6 +728,9 @@ void registerApiRoutes() {
     }
     rangePrefs.remove("json");  //a missing key is fine: nothing to clear
     rangePrefs.end();
+    xSemaphoreTake(settingsLock, portMAX_DELAY);
+    hasDeviceRanges = false;
+    xSemaphoreGive(settingsLock);
     sendOk(request);
   });
 
@@ -793,6 +815,7 @@ void setup() {
   readingsLock = xSemaphoreCreateMutex();
   piCacheLock = xSemaphoreCreateMutex();
   settingsLock = xSemaphoreCreateMutex();
+  hasDeviceRanges = loadDeviceRanges(deviceRanges);
   Serial.begin(115200);
 
   Serial.println("Starting the LittleFS Webserver..");

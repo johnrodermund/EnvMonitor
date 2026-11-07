@@ -48,8 +48,8 @@ public:
     wtStats.resetDataset();
   }
 
-  template <typename Store>
-  void save(Store &store) const {
+  //The exact contents save() writes, so a caller can build it under a lock and write it after
+  std::string saveText() const {
     std::string text = fileHeader;
     for (int i = 0; i < size(); i++) {
       const char *timestamp = orderedTimestamp(i);
@@ -59,7 +59,17 @@ public:
       text += " " + statsNumber(wtStats.getOrderedValue(i));
       text += "\n";
     }
-    store.write(readingsPath, text);
+    return text;
+  }
+
+  //Path the text from saveText() belongs at
+  static const char *path() {
+    return readingsPath;
+  }
+
+  template <typename Store>
+  void save(Store &store) const {
+    store.write(readingsPath, saveText());
   }
 
   template <typename Store>

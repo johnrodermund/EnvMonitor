@@ -12,6 +12,7 @@ export interface MetricCardProps {
   slopePerHour: number | null;
   level: Level;
   tags: string[];
+  extra?: string | null;
 }
 
 export function MetricCard(p: MetricCardProps) {
@@ -28,6 +29,7 @@ export function MetricCard(p: MetricCardProps) {
       ) : (
         <div class="card-value">{fmt(p.value, p.digits)}</div>
       )}
+      {p.extra && <div class="card-line">{p.extra}</div>}
       <div class="card-line">
         Avg {fmt(p.mean, p.digits)} ± {fmt(p.spread, p.digits)}
       </div>

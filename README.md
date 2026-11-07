@@ -72,6 +72,7 @@ This is built for a trusted home network:
 - ArduinoOTA has no password, so anyone on the network can replace the firmware.
 - The `EnvMonitor-Setup` access point is open while waiting for Wi-Fi details.
 - Anyone on the network can change the API settings at `/api/apiconfig`, and the API token travels over plain HTTP.
+- That also means anyone on the network can point the device, with its stored token, at a server of their choosing.
 
 Don't expose the device to the internet.
 
