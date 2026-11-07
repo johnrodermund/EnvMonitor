@@ -30,6 +30,11 @@ public:
     return phStats.size();
   }
 
+  //Timestamp text of the i-th reading, oldest first
+  const char *timestampAt(int i) const {
+    return orderedTimestamp(i);
+  }
+
   void append(const std::string &timestamp, float ph, float ec, float wt) {
     snprintf(timestamps[phStats.index], timestampSize, "%s", timestamp.c_str());
     phStats.updatedata(ph);
