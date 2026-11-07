@@ -306,6 +306,7 @@ void resume_during_sampling_powers_off_and_discards() {
 
   TEST_ASSERT_FALSE(host.phPower);
   TEST_ASSERT_EQUAL_INT(0, host.recorded.size());
+  TEST_ASSERT_TRUE(cycle.step() == CycleStep::Waiting);
 }
 
 void step_and_progress_follow_the_reading() {
@@ -393,6 +394,60 @@ void manual_and_calibration_seq_increment() {
   TEST_ASSERT_EQUAL_UINT32(manual0 + 1, cycle.manualSeq());
 }
 
+void warmup_elapsed_is_zero_when_now_is_before_warmup_start() {
+  FakeHost host;
+  ReadingCycle cycle(host, 2368, 1880, interval, holdTimeout);
+  cycle.tick(1000);  //applies the pending reading
+  cycle.tick(1000);  //PowerOn becomes Warmup with warmupStart 1000
+  TEST_ASSERT_TRUE(cycle.step() == CycleStep::Warmup);
+
+  TEST_ASSERT_EQUAL_UINT32(0, cycle.warmupElapsed(999));
+  TEST_ASSERT_EQUAL_UINT32(500, cycle.warmupElapsed(1500));
+}
+
+void ph7_without_a_measured_ph4_is_ignored() {
+  FakeHost host;
+  ReadingCycle cycle(host, 2368, 1880, interval, holdTimeout);
+  unsigned long now = 0;
+  run(cycle, now, oneMeasurement);
+  cycle.request(CycleCommand::Hold);
+  run(cycle, now, 200);
+  unsigned cal0 = cycle.calibrationSeq();
+
+  host.adcSamples = {1900};
+  cycle.request(CycleCommand::MeasurePh7);
+  run(cycle, now, oneMeasurement);
+
+  TEST_ASSERT_EQUAL_FLOAT(0, host.savedPh7);
+  TEST_ASSERT_EQUAL_FLOAT(2368, cycle.ph4());
+  TEST_ASSERT_EQUAL_UINT32(cal0, cycle.calibrationSeq());
+  TEST_ASSERT_TRUE(cycle.status() == CycleStatus::Holding);
+}
+
+void ph4_ready_clears_on_hold_timeout_ph7_finish_and_new_ph4() {
+  FakeHost host;
+  ReadingCycle cycle(host, 2368, 1880, interval, holdTimeout);
+  unsigned long now = 0;
+  run(cycle, now, oneMeasurement);
+
+  cycle.request(CycleCommand::MeasurePh4);
+  run(cycle, now, oneMeasurement);
+  TEST_ASSERT_TRUE(cycle.ph4Ready());
+  run(cycle, now, holdTimeout + 1000);
+  TEST_ASSERT_FALSE(cycle.ph4Ready());
+
+  cycle.request(CycleCommand::MeasurePh4);
+  run(cycle, now, oneMeasurement);
+  TEST_ASSERT_TRUE(cycle.ph4Ready());
+  cycle.request(CycleCommand::MeasurePh7);
+  run(cycle, now, oneMeasurement);
+  TEST_ASSERT_FALSE(cycle.ph4Ready());
+
+  cycle.request(CycleCommand::MeasurePh4);
+  run(cycle, now, 5000);
+  TEST_ASSERT_FALSE(cycle.ph4Ready());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(boot_takes_a_first_reading_and_records_it_complete);
@@ -418,5 +473,8 @@ int main() {
   RUN_TEST(step_and_progress_follow_the_reading);
   RUN_TEST(ph4_ready_only_after_ph4_measurement);
   RUN_TEST(manual_and_calibration_seq_increment);
+  RUN_TEST(warmup_elapsed_is_zero_when_now_is_before_warmup_start);
+  RUN_TEST(ph7_without_a_measured_ph4_is_ignored);
+  RUN_TEST(ph4_ready_clears_on_hold_timeout_ph7_finish_and_new_ph4);
   return UNITY_END();
 }

@@ -122,8 +122,14 @@ public:
     if (phase != Phase::Warmup) {
       return 0;
     }
-    unsigned long elapsed = now - warmupStart;
-    return elapsed > warmupTime ? warmupTime : elapsed;
+    //A handler's now can be a little earlier than the tick that set warmupStart
+    long diff = (long)(now - warmupStart);
+    if (diff <= 0) {
+      return 0;
+    }
+    unsigned long limit = warmupTime;
+    unsigned long elapsed = (unsigned long)diff;
+    return elapsed > limit ? limit : elapsed;
   }
 
   static unsigned long warmupMs() {
@@ -253,6 +259,12 @@ private:
       return false;
     }
 
+    //A pH 7 measurement without a fresh pH 4 would pair a stale value, so ignore it untouched
+    if (command == CycleCommand::MeasurePh7 && !ph4Measured) {
+      pending.compare_exchange_strong(command, CycleCommand::None);
+      return true;
+    }
+
     if (phase == Phase::Warmup || phase == Phase::Sampling) {
       host.setPhPower(false);
     }
@@ -277,6 +289,7 @@ private:
         break;
 
       case CycleCommand::MeasurePh4:
+        ph4Measured = false;
         startMeasurement(Job::Ph4);
         break;
 
