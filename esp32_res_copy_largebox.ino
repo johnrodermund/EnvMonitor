@@ -14,6 +14,7 @@
 #include "src/reading_queue.h"
 #include "src/sensor_math.h"
 #include "src/wifi_setup.h"
+#include "src/web_assets.h"
 
 
 #define totalcount 200
@@ -317,53 +318,6 @@ void sendQueuedReading() {
   xSemaphoreGive(apiQueueLock);
 }
 
-String processor(const String &var) {
-
-  if (var == "interval0_html")
-    return String(interval0 / 60000);
-
-  if (var == "title_html")
-    return title;
-
-  if (var == "ph_html")
-    return String(readings.ph().currentValue);
-
-  if (var == "phstd_html")
-    return String(phstdev);
-
-  if (var == "phmean_html")
-    return String(readings.ph().mean);
-
-  if (var == "phmeanstd_html")
-    return String(sqrt(readings.ph().sVar));
-
-  if (var == "ec_html")
-    return String(readings.ec().currentValue);
-
-  if (var == "ecmean_html")
-    return String(readings.ec().mean);
-
-  if (var == "ecmeanstd_html")
-    return String(sqrt(readings.ec().sVar));
-
-  if (var == "wt_html")
-    return String(readings.wt().currentValue);
-
-  if (var == "wtmean_html")
-    return String(readings.wt().mean);
-
-  if (var == "wtmeanstd_html")
-    return String(sqrt(readings.wt().sVar));
-
-  if (var == "log_html")
-    return programlog;
-
-  if (var == "datatable0_html")
-    return readings.chartRows().c_str();
-
-  return String();
-}
-
 void restoreAllData() {
   readings.restore(readingStore);
   //settings variables below
@@ -457,22 +411,23 @@ void setup() {
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
 
 
-  // Route for root index.html
-  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->send(LittleFS, "/index.html", "text/html", false, processor);
-  });
+  // The embedded Preact app. Assets keep fixed names and are cache-busted by ?v=<etag> in index.html.
+  for (size_t i = 0; i < webAssetCount; i++) {
+    const WebAsset *asset = &webAssets[i];
+    server.on(asset->path, HTTP_GET, [asset](AsyncWebServerRequest *request) {
+      String etag = String("\"") + asset->etag + "\"";
+      if (request->hasHeader("If-None-Match") && request->getHeader("If-None-Match")->value() == etag) {
+        request->send(304);
+        return;
+      }
+      AsyncWebServerResponse *response = request->beginResponse(200, asset->mime, asset->data, asset->length);
+      response->addHeader("Content-Encoding", "gzip");
+      response->addHeader("ETag", etag);
+      response->addHeader("Cache-Control", asset->path[1] == '\0' ? "no-cache" : "max-age=31536000");
+      request->send(response);
+    });
+  }
 
-  // Route for root index.css
-  server.on("/index.css", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->send(LittleFS, "/index.css", "text/css");
-  });
-
-  // Route for root index.js
-  server.on("/index.js", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->send(LittleFS, "/index.js", "text/html", false, processor);
-  });
-
-  // Route for update
   // Raw sensor values for troubleshooting
   server.on("/diag", HTTP_GET, [](AsyncWebServerRequest *request) {
     String text = "calibration ph4=" + String(cycle.ph4()) + " ph7=" + String(cycle.ph7()) + "\n";
@@ -526,111 +481,6 @@ void setup() {
     request->send(200, "text/plain", "saved\n");
   });
 
-  server.on("/update.html", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->send(LittleFS, "/update.html", "text/html", false, processor);
-  });
-
-
-  // Send a GET request to <ESP_IP>/get?input1=<inputMessage>
-  server.on("/get", HTTP_GET, [](AsyncWebServerRequest *request) {
-    String inputMessage;
-    String inputParam;
-    // GET input1 value on <ESP_IP>/get?input1=<inputMessage>
-    if (request->hasParam("interval0")) {
-      inputMessage = request->getParam("interval0")->value();
-      inputParam = "interval0";
-      inputMessage = inputMessage.toInt() * 60000;
-      Serial.println(inputMessage);
-      writeFile("/interval0.txt", inputMessage.c_str());
-      interval0 = readFile("/interval0.txt").toInt();
-      cycle.setInterval(interval0);
-    }
-    if (request->hasParam("title")) {
-      String inputMessage = request->getParam("title")->value();
-      writeFile("/title.txt", inputMessage.c_str());
-      title = readFile("/title.txt");
-    }
-    if (request->hasParam("restart")) {
-      cycle.request(CycleCommand::Restart);
-      request->redirect("/");
-    }
-
-    if (request->hasParam("reset")) {
-      cycle.request(CycleCommand::WipeAndRestart);
-      request->redirect("/");
-    }
-    if (request->hasParam("calibrate0")) {
-      cycle.request(CycleCommand::Hold);
-     request->send(LittleFS, "/calibrate0.html", "text/html");
-    }
-
-    if (request->hasParam("calibrate1")) {
-      cycle.request(CycleCommand::MeasurePh4);
-      request->redirect("/get?calibrate2=");
-     }
-
-    if (request->hasParam("calibrate2")) {
-
-      if (cycle.status() == CycleStatus::Busy) {
-     request->send(LittleFS, "/waiting.html", "text/html");
-      } else {
-     request->send(LittleFS, "/calibrate2.html", "text/html");
-      }
-    }
-
-
-    if (request->hasParam("calibrate3")) {
-      if (cycle.status() == CycleStatus::Holding){
-        cycle.request(CycleCommand::MeasurePh7);
-      }
-      if (cycle.status() == CycleStatus::Busy) {
-       request->send(LittleFS, "/waiting.html", "text/html");
-      } else {
-        request->send(200, "text/html", "ph4 updated to " + String(cycle.ph4()) + " and ph7 updated " + "to " + String(cycle.ph7()) + "<br><a href=\"/\">Return to Home Page</a>");
-      }
-    }
-
-    if (request->hasParam("takeph0")) {
-      cycle.request(CycleCommand::Hold);
-      request->send(200, "text/html", "To take pH reading: Make sure cleaned probe is in the solution to be measured and click to continue.<form action=\"/get\"><button name=\"takeph1\" type=\"submit\">Continue</button></form>");
-    }
-
-    if (request->hasParam("takeph1")) {
-      cycle.request(CycleCommand::MeasureManual);
-      request->redirect("/get?takeph2=");
-         }
-
-    if (request->hasParam("takeph2")) {
-      if (cycle.status() == CycleStatus::Busy) {
-         request->send(LittleFS, "/waiting.html", "text/html");
-      } else {
-        const Reading &manual = cycle.manualReading();
-        request->send(200, "text/html", "Current pH is " + String(manual.ph) +
-        "\nCurrent ec is " + String(manual.ec) + "\nCurrent water temperature is " + String(manual.wt) + "<br><a href=\"/\">Return to Home Page</a>");
-      }
-    }
-
-    if (request->hasParam("takenewreading0")) {
-      cycle.request(CycleCommand::TakeReading);
-      request->redirect("/get?takenewreading1=");
-         }
-
-    if (request->hasParam("takenewreading1")) {
-      if (cycle.status() != CycleStatus::Idle) {
-        request->send(200, "text/html", "<meta http-equiv='refresh' content='10'>Please wait...");
-      } else {
-        request->redirect("/");
-         }
-      }
-
-    else {
-      inputMessage = "No message sent";
-      inputParam = "none";
-    }
-    Serial.println(inputMessage);
-    request->redirect("/");
-  });
-
 
 
   server.onNotFound(notFound);
@@ -675,7 +525,7 @@ void setup() {
 
 
   //reset the interval if it is outside of the range
-  if (interval0 < 12000 || interval0 > 720000) { interval0 = 600000; }
+  if (interval0 < 120000 || interval0 > 43200000) { interval0 = 600000; }
   cycle.configure(readFile("/ph4.txt").toFloat(), readFile("/ph7.txt").toFloat(), interval0);
 
     xTaskCreatePinnedToCore (

@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
-    "embed": "echo embed is implemented in Task 14 && exit 1"
+    "embed": "node scripts/embed.mjs"
   },
   "dependencies": {
     "preact": "10.24.3",
