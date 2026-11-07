@@ -1,0 +1,109 @@
+{
+  "stats": {
+    "age_s": 14,
+    "error": null,
+    "none": false,
+    "body": {
+      "device": "envmonitor-1",
+      "window": "24h",
+      "start": "2026-11-05T14:40:00Z",
+      "end": "2026-11-06T14:40:00Z",
+      "stats": {
+        "ph": {
+          "latest": 5.97,
+          "mean": 5.98,
+          "std": 0.08,
+          "min": 5.84,
+          "max": 6.11,
+          "slope_per_hour": 0.002,
+          "count": 144
+        },
+        "ec": {
+          "latest": 652,
+          "mean": 649,
+          "std": 17,
+          "min": 622,
+          "max": 679,
+          "slope_per_hour": 0.4,
+          "count": 144
+        },
+        "water_temp_f": {
+          "latest": 71.6,
+          "mean": 71.4,
+          "std": 0.8,
+          "min": 70.3,
+          "max": 72.7,
+          "slope_per_hour": 0.05,
+          "count": 144
+        }
+      },
+      "flags": [],
+      "severity": "ok"
+    }
+  },
+  "report": {
+    "age_s": 14,
+    "error": null,
+    "none": false,
+    "body": {
+      "id": 41,
+      "device": "envmonitor-1",
+      "created_at": "2026-11-06T13:00:12Z",
+      "window_start": "2026-11-05T13:00:00Z",
+      "window_end": "2026-11-06T12:50:00Z",
+      "severity": "ok",
+      "flags": [],
+      "headline": "All readings are within target",
+      "summary": "pH, EC and water temperature stayed inside their target ranges over the last 24 hours. No drift or noise was detected.",
+      "source": "model",
+      "model": "qwen2.5:1.5b",
+      "duration_s": 118.4
+    }
+  },
+  "thresholds": {
+    "age_s": 14,
+    "error": null,
+    "none": false,
+    "body": {
+      "ph": {
+        "valid": [
+          2,
+          10
+        ],
+        "target": [
+          5.5,
+          6.5
+        ],
+        "drift_per_hour": 0.05,
+        "noisy_std": 0.3
+      },
+      "ec": {
+        "valid": [
+          0,
+          5000
+        ],
+        "target": [
+          200,
+          1000
+        ],
+        "drift_per_hour": 10,
+        "noisy_std": 50
+      },
+      "temp": {
+        "valid": [
+          30,
+          99
+        ],
+        "target": [
+          60,
+          80
+        ],
+        "drift_per_hour": 1,
+        "noisy_std": 2
+      },
+      "stuck_min_count": 6,
+      "silent_intervals": 3,
+      "default_interval_s": 600
+    }
+  }
+}

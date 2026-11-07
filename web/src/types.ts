@@ -111,3 +111,14 @@ export interface PiResponse {
   report: PiEntry<PiReportBody>;
   thresholds: PiEntry<Record<string, unknown>>;
 }
+
+export type CommandName =
+  | 'reading'
+  | 'measure_start'
+  | 'measure'
+  | 'calibrate_start'
+  | 'calibrate_ph4'
+  | 'calibrate_ph7'
+  | 'cancel'
+  | 'restart'
+  | 'reset';

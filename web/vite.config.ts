@@ -1,9 +1,10 @@
 import { defineConfig } from 'vite';
 import preact from '@preact/preset-vite';
+import { mockApi } from './mock/plugin';
 
 export default defineConfig({
   base: './',
-  plugins: [preact()],
+  plugins: [preact(), mockApi()],
   build: {
     assetsInlineLimit: 0,
     cssCodeSplit: false,

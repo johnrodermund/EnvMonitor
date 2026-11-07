@@ -1,0 +1,55 @@
+{
+  "title": "Reservoir",
+  "interval_min": 10,
+  "uptime_s": 93784,
+  "free_heap": 142336,
+  "count": 0,
+  "last_reading": null,
+  "averages": {
+    "ph": [
+      null,
+      null
+    ],
+    "ec": [
+      null,
+      null
+    ],
+    "wt": [
+      null,
+      null
+    ]
+  },
+  "cycle": {
+    "state": "idle",
+    "step": "",
+    "job": "",
+    "warmup_elapsed_ms": null,
+    "warmup_ms": null,
+    "samples": null,
+    "sample_total": null,
+    "ph4_ready": false,
+    "pending_ph4_adc": null
+  },
+  "manual": {
+    "seq": 0,
+    "ph": null,
+    "ec": null,
+    "wt": null
+  },
+  "calibration": {
+    "seq": 0,
+    "ph4_adc": null,
+    "ph7_adc": null
+  },
+  "diag": {
+    "last_ph_adc": null,
+    "ph_samples": [],
+    "last_ec_adc": null
+  },
+  "api": {
+    "queued": 0,
+    "last_http": 0,
+    "failures": 0,
+    "delivered": 0
+  }
+}

@@ -1,0 +1,82 @@
+{
+  "title": "Reservoir",
+  "interval_min": 10,
+  "uptime_s": 93784,
+  "free_heap": 142336,
+  "count": 200,
+  "last_reading": {
+    "time": "2026-11-06T09:40:00",
+    "ph": 15.6,
+    "ph_pm": 0,
+    "ec": 652,
+    "wt": 71.6
+  },
+  "averages": {
+    "ph": [
+      15.6,
+      0
+    ],
+    "ec": [
+      648,
+      11
+    ],
+    "wt": [
+      71.4,
+      0.3
+    ]
+  },
+  "cycle": {
+    "state": "idle",
+    "step": "",
+    "job": "",
+    "warmup_elapsed_ms": null,
+    "warmup_ms": null,
+    "samples": null,
+    "sample_total": null,
+    "ph4_ready": false,
+    "pending_ph4_adc": null
+  },
+  "manual": {
+    "seq": 0,
+    "ph": null,
+    "ec": null,
+    "wt": null
+  },
+  "calibration": {
+    "seq": 0,
+    "ph4_adc": 2368,
+    "ph7_adc": 1880
+  },
+  "diag": {
+    "last_ph_adc": 4095,
+    "ph_samples": [
+      4095,
+      4095,
+      4095,
+      4095,
+      4095,
+      4095,
+      4095,
+      4095,
+      4095,
+      4095,
+      4095,
+      4095,
+      4095,
+      4095,
+      4095,
+      4095,
+      4095,
+      4095,
+      4095,
+      4095
+    ],
+    "last_ec_adc": 839.85
+  },
+  "api": {
+    "queued": 0,
+    "last_http": 201,
+    "failures": 0,
+    "delivered": 302
+  }
+}

@@ -1,0 +1,82 @@
+{
+  "title": "Reservoir",
+  "interval_min": 10,
+  "uptime_s": 93784,
+  "free_heap": 142336,
+  "count": 200,
+  "last_reading": {
+    "time": "2026-11-06T09:40:00",
+    "ph": 5.97,
+    "ph_pm": 0.04,
+    "ec": 652,
+    "wt": 71.6
+  },
+  "averages": {
+    "ph": [
+      5.98,
+      0.05
+    ],
+    "ec": [
+      648,
+      11
+    ],
+    "wt": [
+      71.4,
+      0.3
+    ]
+  },
+  "cycle": {
+    "state": "holding",
+    "step": "calibrate ph4",
+    "job": "calibrate",
+    "warmup_elapsed_ms": null,
+    "warmup_ms": null,
+    "samples": 20,
+    "sample_total": 20,
+    "ph4_ready": true,
+    "pending_ph4_adc": 2368
+  },
+  "manual": {
+    "seq": 0,
+    "ph": null,
+    "ec": null,
+    "wt": null
+  },
+  "calibration": {
+    "seq": 0,
+    "ph4_adc": 2368,
+    "ph7_adc": 1880
+  },
+  "diag": {
+    "last_ph_adc": 2047.45,
+    "ph_samples": [
+      2046,
+      2044,
+      2058,
+      2058,
+      2043,
+      2058,
+      2043,
+      2043,
+      2045,
+      2046,
+      2047,
+      2040,
+      2047,
+      2048,
+      2056,
+      2057,
+      2042,
+      2044,
+      2040,
+      2044
+    ],
+    "last_ec_adc": 839.85
+  },
+  "api": {
+    "queued": 0,
+    "last_http": 201,
+    "failures": 0,
+    "delivered": 302
+  }
+}
