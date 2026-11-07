@@ -24,20 +24,37 @@ inline Ranges builtinRanges() {
   return r;
 }
 
+//Values are saved with three decimals, so every rule is checked on the rounded values.
+//That keeps anything accepted here valid after a save and re-read.
+constexpr float RANGE_LIMIT = 100000.0f;
+
+inline float roundTo3(float v) {
+  return (float)(std::round((double)v * 1000.0) / 1000.0);
+}
+
 inline bool validateMetricRange(const MetricRange &m, const char *name, std::string &error) {
-  if (!std::isfinite(m.validLo) || !std::isfinite(m.validHi) || !std::isfinite(m.targetLo) || !std::isfinite(m.targetHi)) {
-    error = std::string(name) + ": values must be finite numbers";
-    return false;
+  const float values[4] = {m.validLo, m.validHi, m.targetLo, m.targetHi};
+  for (float v : values) {
+    if (!std::isfinite(v)) {
+      error = std::string(name) + ": values must be finite numbers";
+      return false;
+    }
+    if (v < -RANGE_LIMIT || v > RANGE_LIMIT) {
+      error = std::string(name) + ": values must be between -100000 and 100000";
+      return false;
+    }
   }
-  if (!(m.validLo < m.validHi)) {
+  float validLo = roundTo3(m.validLo), validHi = roundTo3(m.validHi);
+  float targetLo = roundTo3(m.targetLo), targetHi = roundTo3(m.targetHi);
+  if (!(validLo < validHi)) {
     error = std::string(name) + ": valid low must be below valid high";
     return false;
   }
-  if (!(m.targetLo < m.targetHi)) {
+  if (!(targetLo < targetHi)) {
     error = std::string(name) + ": target low must be below target high";
     return false;
   }
-  if (m.targetLo < m.validLo || m.targetHi > m.validHi) {
+  if (targetLo < validLo || targetHi > validHi) {
     error = std::string(name) + ": target must sit inside valid";
     return false;
   }
@@ -72,19 +89,30 @@ inline size_t findKey(const std::string &s, const char *key, size_t from, size_t
   return std::string::npos;
 }
 
-//Parses a finite number at i. Moves i past it.
+//Parses a JSON-style number at i: optional '-', digits, optional '.digits', optional exponent.
+//Hex, '+', 'nan' and 'inf' are rejected. Moves i past it.
 inline bool readNumber(const std::string &s, size_t &i, size_t end, float &value) {
   i = skipSpace(s, i, end);
-  if (i >= end) return false;
-  char c = s[i];
-  if (!(c == '-' || c == '+' || c == '.' || (c >= '0' && c <= '9'))) return false;
-  const char *start = s.c_str() + i;
-  char *stop = nullptr;
-  double parsed = strtod(start, &stop);
-  if (stop == start || !std::isfinite(parsed)) return false;
-  i += (size_t)(stop - start);
-  if (i > end) return false;
+  size_t p = i;
+  auto digit = [&](size_t k) { return k < end && s[k] >= '0' && s[k] <= '9'; };
+  if (p < end && s[p] == '-') p++;
+  if (!digit(p)) return false;
+  while (digit(p)) p++;
+  if (p < end && s[p] == '.') {
+    p++;
+    if (!digit(p)) return false;
+    while (digit(p)) p++;
+  }
+  if (p < end && (s[p] == 'e' || s[p] == 'E')) {
+    p++;
+    if (p < end && (s[p] == '+' || s[p] == '-')) p++;
+    if (!digit(p)) return false;
+    while (digit(p)) p++;
+  }
+  double parsed = strtod(s.substr(i, p - i).c_str(), nullptr);
+  if (!std::isfinite(parsed)) return false;
   value = (float)parsed;
+  i = p;
   return true;
 }
 

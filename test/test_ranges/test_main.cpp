@@ -157,6 +157,65 @@ void ranges_json_round_trips(void) {
   TEST_ASSERT_TRUE(sameRanges(builtinRanges(), parsed));
 }
 
+static bool near3(float a, float b) {
+  return std::fabs(a - b) <= 0.0005f;
+}
+
+void round_trip_keeps_fractional_values(void) {
+  Ranges r = builtinRanges();
+  r.ph = {2.5f, 9.5f, 5.25f, 6.75f};
+  r.ec.targetLo = 150.125f;
+  r.ec.targetHi = 999.875f;
+  std::string error;
+  TEST_ASSERT_TRUE_MESSAGE(validateRanges(r, error), error.c_str());
+  Ranges back = {};
+  TEST_ASSERT_TRUE_MESSAGE(parseThresholds(rangesJson(r), back, error), error.c_str());
+  const float *a = &r.ph.validLo, *b = &back.ph.validLo;
+  for (int i = 0; i < 12; i++) TEST_ASSERT_TRUE(near3(a[i], b[i]));
+}
+
+void rejects_values_that_collapse_when_saved(void) {
+  Ranges r = builtinRanges();
+  r.ec.targetLo = 0.0001f;
+  r.ec.targetHi = 0.0004f;
+  std::string error;
+  TEST_ASSERT_FALSE(validateRanges(r, error));
+}
+
+void rejects_huge_values_with_magnitude_error(void) {
+  Ranges r = builtinRanges();
+  r.ec.validHi = 1e30f;
+  std::string error;
+  TEST_ASSERT_FALSE(validateRanges(r, error));
+  TEST_ASSERT_EQUAL_STRING("ec: values must be between -100000 and 100000", error.c_str());
+  r = builtinRanges();
+  r.temp.validLo = -100001.0f;
+  TEST_ASSERT_FALSE(validateRanges(r, error));
+  TEST_ASSERT_EQUAL_STRING("temp: values must be between -100000 and 100000", error.c_str());
+}
+
+void parse_leaves_out_untouched_on_failure(void) {
+  Ranges out = builtinRanges();
+  out.ph.targetLo = 5.75f;
+  Ranges before = out;
+  std::string error;
+  std::string json = R"({"ph":{"valid":[2,10],"target":[1,6]},"ec":{"valid":[0,5000],"target":[200,1000]},"temp":{"valid":[30,99],"target":[60,80]}})";
+  TEST_ASSERT_FALSE(parseThresholds(json, out, error));
+  TEST_ASSERT_TRUE(sameRanges(before, out));
+  TEST_ASSERT_FALSE(parseThresholds("{}", out, error));
+  TEST_ASSERT_TRUE(sameRanges(before, out));
+}
+
+void rejects_hex_and_other_non_json_numbers(void) {
+  const char *bad[] = {"0x10", "0x1p3", "+5", ".5", "nan", "inf", "5.", "1e"};
+  for (const char *n : bad) {
+    std::string json = std::string("{\"ph\":{\"valid\":[2,") + n + "],\"target\":[5.5,6.5]},\"ec\":{\"valid\":[0,5000],\"target\":[200,1000]},\"temp\":{\"valid\":[30,99],\"target\":[60,80]}}";
+    Ranges r = {};
+    std::string error;
+    TEST_ASSERT_FALSE_MESSAGE(parseThresholds(json, r, error), n);
+  }
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(parses_pi_thresholds_with_extra_keys);
@@ -173,5 +232,10 @@ int main() {
   RUN_TEST(source_names);
   RUN_TEST(ranges_json_shape);
   RUN_TEST(ranges_json_round_trips);
+  RUN_TEST(round_trip_keeps_fractional_values);
+  RUN_TEST(rejects_values_that_collapse_when_saved);
+  RUN_TEST(rejects_huge_values_with_magnitude_error);
+  RUN_TEST(parse_leaves_out_untouched_on_failure);
+  RUN_TEST(rejects_hex_and_other_non_json_numbers);
   return UNITY_END();
 }
