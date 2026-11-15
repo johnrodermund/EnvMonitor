@@ -65,31 +65,3 @@ inline float trimmedMean(const float *values, int n, int trim) {
   }
   return total / (n - 2 * trim);
 }
-
-//Decides when a freshly powered pH board has settled: once the minimum time has passed and a
-//window's hum-free mean is within maxStep ADC counts of the window before it.
-class WarmupSettle {
-
-public:
-
-  WarmupSettle(unsigned long minMs_in, float maxStep_in) : minMs(minMs_in), maxStep(maxStep_in) {}
-
-  void reset() {
-    windows = 0;
-  }
-
-  //Adds a finished window's mean, taken elapsedMs after power-on. True when settled.
-  bool add(float mean, unsigned long elapsedMs) {
-    bool settled = windows > 0 && elapsedMs >= minMs && std::fabs(mean - previous) <= maxStep;
-    previous = mean;
-    windows++;
-    return settled;
-  }
-
-private:
-
-  unsigned long minMs;
-  float maxStep;
-  int windows = 0;
-  float previous = 0;
-};

@@ -96,8 +96,7 @@ export function Diagnostics() {
         </p>
         {s.diag.last_warmup_ms ? (
           <p>
-            Last pH warmup: <strong>{Math.round(s.diag.last_warmup_ms / 1000)} s</strong>,{' '}
-            {s.diag.last_warmup_settled ? 'settled' : 'stopped at the limit before settling'}
+            Last pH warmup: <strong>{Math.round(s.diag.last_warmup_ms / 1000)} s</strong>
           </p>
         ) : null}
         {samples.length > 0 ? <SampleChart samples={samples} /> : <p class="muted small">No pH samples yet</p>}

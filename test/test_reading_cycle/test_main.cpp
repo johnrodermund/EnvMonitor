@@ -5,7 +5,7 @@
 
 const unsigned long interval = 600000;
 const unsigned long holdTimeout = 900000;
-const unsigned long oneMeasurement = 25000;
+const unsigned long oneMeasurement = 35000;
 
 void run(ReadingCycle &cycle, unsigned long &now, unsigned long duration, unsigned long step = 100) {
   unsigned long end = now + duration;
@@ -76,7 +76,7 @@ void next_reading_waits_for_the_interval() {
   run(cycle, now, 590000);
   TEST_ASSERT_EQUAL_INT(1, host.recorded.size());
 
-  run(cycle, now, 40000);
+  run(cycle, now, 50000);
   TEST_ASSERT_EQUAL_INT(2, host.recorded.size());
 }
 
@@ -212,23 +212,19 @@ void wipe_clears_readings_before_restarting() {
   TEST_ASSERT_TRUE(host.restarted);
 }
 
-void scheduled_reading_gets_the_minimum_warmup_after_slow_ec_read() {
+void scheduled_reading_gets_the_full_warmup_after_slow_ec_read() {
   FakeHost host;
   unsigned long now = 0;
   host.clock = &now;
   ReadingCycle cycle(host, 2368, 1880, interval, holdTimeout);
+  host.watched = &cycle;
 
   run(cycle, now, oneMeasurement + 3000);
 
   TEST_ASSERT_EQUAL_INT(1, host.recorded.size());
-  TEST_ASSERT_TRUE(cycle.lastWarmupSettled());
-  TEST_ASSERT_GREATER_OR_EQUAL_UINT32(ReadingCycle::warmupMinMs(), cycle.lastWarmupMs());
-  TEST_ASSERT_LESS_THAN_UINT32(ReadingCycle::warmupMinMs() + 5000, cycle.lastWarmupMs());
-}
-
-//Drifts 1 count per read (20 per window) for 400 reads, then holds still
-float drifts_then_settles(size_t index) {
-  return index < 400 ? 2300 - (float)index : 1900;
+  TEST_ASSERT_GREATER_OR_EQUAL_UINT32(30000, host.firstSamplingAt - host.powerOnAt);
+  TEST_ASSERT_GREATER_OR_EQUAL_UINT32(30000, cycle.lastWarmupMs());
+  TEST_ASSERT_LESS_THAN_UINT32(30200, cycle.lastWarmupMs());
 }
 
 float drifts_forever(size_t index) {
@@ -240,48 +236,32 @@ float one_glitch_per_window(size_t index) {
   return index % 20 == 7 ? 4095 : 2124;
 }
 
-void warmup_waits_until_the_board_stops_drifting() {
-  FakeHost host;
-  host.adcByIndex = drifts_then_settles;
-  ReadingCycle cycle(host, 2368, 1880, interval, holdTimeout);
-  unsigned long now = 0;
-
-  run(cycle, now, 70000);
-
-  TEST_ASSERT_EQUAL_INT(1, host.recorded.size());
-  TEST_ASSERT_TRUE(cycle.lastWarmupSettled());
-  TEST_ASSERT_GREATER_THAN_UINT32(40000, cycle.lastWarmupMs());
-  TEST_ASSERT_LESS_THAN_UINT32(ReadingCycle::warmupMs(), cycle.lastWarmupMs());
-  TEST_ASSERT_EQUAL_FLOAT(1900, cycle.lastPhAdc());
-}
-
-void warmup_gives_up_at_the_maximum_and_still_records() {
+void warmup_is_fixed_even_while_the_board_drifts() {
   FakeHost host;
   host.adcByIndex = drifts_forever;
   ReadingCycle cycle(host, 2368, 1880, interval, holdTimeout);
   unsigned long now = 0;
 
-  run(cycle, now, ReadingCycle::warmupMs() + 5000);
+  run(cycle, now, oneMeasurement);
 
   TEST_ASSERT_EQUAL_INT(1, host.recorded.size());
-  TEST_ASSERT_FALSE(cycle.lastWarmupSettled());
-  TEST_ASSERT_GREATER_OR_EQUAL_UINT32(ReadingCycle::warmupMs(), cycle.lastWarmupMs());
-  TEST_ASSERT_LESS_THAN_UINT32(ReadingCycle::warmupMs() + 200, cycle.lastWarmupMs());
+  TEST_ASSERT_GREATER_OR_EQUAL_UINT32(30000, cycle.lastWarmupMs());
+  TEST_ASSERT_LESS_THAN_UINT32(30200, cycle.lastWarmupMs());
   TEST_ASSERT_FALSE(host.phPower);
 }
 
 void warmup_window_means_are_kept_for_diagnostics() {
   FakeHost host;
-  host.adcByIndex = drifts_then_settles;
+  host.adcByIndex = drifts_forever;
   ReadingCycle cycle(host, 2368, 1880, interval, holdTimeout);
   unsigned long now = 0;
 
-  run(cycle, now, 70000);
+  run(cycle, now, oneMeasurement);
 
   int windows = cycle.lastWarmupWindowCount();
-  TEST_ASSERT_GREATER_THAN_INT(2, windows);
+  TEST_ASSERT_GREATER_OR_EQUAL_INT(13, windows);  //30 s of 2.1 s windows
   TEST_ASSERT_FLOAT_WITHIN(0.01, 2290.5, cycle.lastWarmupWindowMean(0));  //mean of reads 0-19
-  TEST_ASSERT_EQUAL_FLOAT(1900, cycle.lastWarmupWindowMean(windows - 1));
+  TEST_ASSERT_FLOAT_WITHIN(0.01, 2270.5, cycle.lastWarmupWindowMean(1));
 }
 
 void a_glitch_read_does_not_move_the_reading() {
@@ -425,7 +405,7 @@ void step_and_progress_follow_the_reading() {
   run(cycle, now, 12000);
   TEST_ASSERT_TRUE(cycle.step() == CycleStep::Warmup);
   TEST_ASSERT_EQUAL_UINT32(now - warmupBegan, cycle.warmupElapsed(now));
-  TEST_ASSERT_EQUAL_UINT32(60000, ReadingCycle::warmupMs());
+  TEST_ASSERT_EQUAL_UINT32(30000, ReadingCycle::warmupMs());
   TEST_ASSERT_EQUAL_INT(20, ReadingCycle::sampleTotalCount());
 
   runUntilStep(cycle, now, CycleStep::Sampling);
@@ -561,9 +541,8 @@ int main() {
   RUN_TEST(manual_measurement_is_reported_but_not_recorded);
   RUN_TEST(restart_waits_two_seconds_for_the_response);
   RUN_TEST(wipe_clears_readings_before_restarting);
-  RUN_TEST(scheduled_reading_gets_the_minimum_warmup_after_slow_ec_read);
-  RUN_TEST(warmup_waits_until_the_board_stops_drifting);
-  RUN_TEST(warmup_gives_up_at_the_maximum_and_still_records);
+  RUN_TEST(scheduled_reading_gets_the_full_warmup_after_slow_ec_read);
+  RUN_TEST(warmup_is_fixed_even_while_the_board_drifts);
   RUN_TEST(warmup_window_means_are_kept_for_diagnostics);
   RUN_TEST(a_glitch_read_does_not_move_the_reading);
   RUN_TEST(ph_reads_stay_on_a_105_ms_grid);

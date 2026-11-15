@@ -33,7 +33,7 @@ export interface StatusJson {
   cycle: CycleStatus;
   manual: { seq: Num; ph: Num; ec: Num; wt: Num };
   calibration: { seq: Num; ph4_adc: Num; ph7_adc: Num };
-  diag: { last_ph_adc: Num; ph_samples: Num[]; last_ec_adc: Num; last_warmup_ms?: Num; last_warmup_settled?: boolean | null };
+  diag: { last_ph_adc: Num; ph_samples: Num[]; last_ec_adc: Num; last_warmup_ms?: Num };
   api: { queued: Num; last_http: Num; failures: Num; delivered: Num };
 }
 
