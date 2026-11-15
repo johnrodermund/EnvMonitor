@@ -52,10 +52,16 @@ volatile bool settleRequested = false;
 SettleStep settleStep = SettleStep::Idle;
 String settleLog;
 unsigned long settleStart = 0;
-unsigned long lastSettleRead = 0;
 const unsigned long settleEcTime = 10000;
-const unsigned long settlePhTime = 90000;
-const int settlePins[] = { 0, 2, 3, 4, 5 };  //every free analog pin; GPIO 1 drives the relay
+const unsigned long settlePhTime = 180000;
+const int settleBurstReads = 200;
+SampleSchedule settleSchedule;  //same hum-cancelling 105 ms grid the readings use
+WarmupSettle settleRule(ReadingCycle::warmupMinMs(), ReadingCycle::settleStepCounts());
+float settleSum = 0;
+int settleMin = 0;
+int settleMax = 0;
+int settleReads = 0;
+long settleRuleMetAt = -1;  //ms after pH power-on when the reading cycle's settle rule passed
 
 // readingsLock guards readings and lastPhUncertainty: the sampling task appends, handlers read
 ReadingLog<totalcount> readings;
@@ -147,7 +153,7 @@ float lastEcAdc = 0;
 float takeec() {
   float ecadc = 0;
   for (int i = 0; i < 20; i++) {
-    delay(100);
+    delay(105);  //not 100: that's a whole number of 60 Hz cycles, so mains hum would alias to an offset
     ecadc += analogRead(sensorPin);  //same input as pH, the relay selects which sensor is powered
   }
   ecadc = ecadc / 20.0;
@@ -584,6 +590,9 @@ std::string statusText() {
     s.phSamples[i] = cycle.lastPhSample(i);
   }
   s.lastEcAdc = lastEcAdc;
+  s.warmupMaxMs = ReadingCycle::warmupMs();
+  s.lastWarmupMs = cycle.lastWarmupMs();
+  s.lastWarmupSettled = cycle.lastWarmupSettled();
 
   xSemaphoreTake(apiQueueLock, portMAX_DELAY);
   s.apiQueued = apiQueue.size();
@@ -879,6 +888,11 @@ void setup() {
     for (int i = 0; i < cycle.lastPhSampleCount(); i++) {
       text += " " + String(cycle.lastPhSample(i), 0);
     }
+    text += "\nlast pH warmup ms=" + String(cycle.lastWarmupMs()) + (cycle.lastWarmupSettled() ? " settled" : " gave up unsettled") +
+            " (min " + String(ReadingCycle::warmupMinMs()) + ", max " + String(ReadingCycle::warmupMs()) + ")\nlast pH warmup window means:";
+    for (int i = 0; i < cycle.lastWarmupWindowCount(); i++) {
+      text += " " + String(cycle.lastWarmupWindowMean(i), 1);
+    }
     text += "\nlast EC adc average=" + String(lastEcAdc) + "\n";
     text += "now relay=" + String(digitalRead(relay)) + " sensor back-to-back:";
     for (int i = 0; i < 10; i++) {
@@ -978,17 +992,56 @@ void setup() {
 
 
 
-// Settle test, started from /diag?settle=: holds sampling, powers EC for a while,
-// switches to pH and logs the analog pins so the warmup the pH probe needs can be read off
-void logSettleRead(unsigned long now, long sincePhSwitch) {
-  if (now - lastSettleRead >= 500) {
-    lastSettleRead = now;
-    settleLog += String(sincePhSwitch);
-    for (int pin : settlePins) {
-      settleLog += " " + String(analogRead(pin));
-    }
-    settleLog += "\n";
+// Settle test, started from /diag?settle=: holds sampling, powers EC for a while, then powers pH
+// for settlePhTime and logs hum-free 2.1 s window averages of the sensor pin, so the warmup the pH
+// board needs can be read off. It marks where the reading cycle's settle rule would have passed,
+// and ends with a burst of reads 1 ms apart that shows the mains hum on the pH signal.
+void resetSettleWindow() {
+  settleSchedule.reset();
+  settleSum = 0;
+  settleReads = 0;
+}
+
+void logSettleWindow(unsigned long now, long sincePhOn, bool phOn) {
+  if (!settleSchedule.due(now)) {
+    return;
   }
+  int value = analogRead(sensorPin);
+  if (settleReads == 0 || value < settleMin) {
+    settleMin = value;
+  }
+  if (settleReads == 0 || value > settleMax) {
+    settleMax = value;
+  }
+  settleSum += value;
+  settleReads++;
+  if (settleReads < HUM_WINDOW) {
+    return;
+  }
+  float mean = settleSum / HUM_WINDOW;
+  settleLog += String(sincePhOn) + " " + String(mean, 1) + " " + String(settleMin) + " " + String(settleMax);
+  if (phOn && settleRule.add(mean, (unsigned long)sincePhOn) && settleRuleMetAt < 0) {
+    settleRuleMetAt = sincePhOn;
+    settleLog += " <- settle rule met";
+  }
+  settleLog += "\n";
+  settleSum = 0;
+  settleReads = 0;
+}
+
+void logHumBurst() {
+  int burst[settleBurstReads];
+  unsigned long began = micros();
+  for (int i = 0; i < settleBurstReads; i++) {
+    burst[i] = analogRead(sensorPin);
+    delay(1);
+  }
+  unsigned long took = micros() - began;
+  String line = "hum burst, " + String(settleBurstReads) + " reads over " + String(took / 1000) + " ms:";
+  for (int i = 0; i < settleBurstReads; i++) {
+    line += " " + String(burst[i]);
+  }
+  settleLog += line + "\n";
 }
 
 void runSettleTest() {
@@ -1007,25 +1060,32 @@ void runSettleTest() {
       if (cycle.status() == CycleStatus::Holding) {
         digitalWrite(relay, LOW);
         settleStart = now;
-        lastSettleRead = 0;
-        settleLog = "ms_since_ph_switch GPIO0 GPIO2 GPIO3 GPIO4 GPIO5\n";
+        resetSettleWindow();
+        settleLog = "ms_since_ph_on mean min max (GPIO 3, 20 reads 105 ms apart per line)\n";
         settleStep = SettleStep::EcState;
       }
       break;
 
     case SettleStep::EcState:
-      logSettleRead(now, (long)(now - settleStart) - (long)settleEcTime);
+      logSettleWindow(now, (long)(now - settleStart) - (long)settleEcTime, false);
       if (now - settleStart >= settleEcTime) {
         digitalWrite(relay, HIGH);
         settleStart = now;
+        resetSettleWindow();
+        settleRule.reset();
+        settleRuleMetAt = -1;
         settleStep = SettleStep::PhState;
       }
       break;
 
     case SettleStep::PhState:
-      logSettleRead(now, now - settleStart);
+      logSettleWindow(now, now - settleStart, true);
       if (now - settleStart >= settlePhTime) {
+        logHumBurst();
         digitalWrite(relay, LOW);
+        settleLog += "settle rule (min " + String(ReadingCycle::warmupMinMs()) + " ms, max step " +
+                     String(ReadingCycle::settleStepCounts(), 1) + " counts) ";
+        settleLog += settleRuleMetAt >= 0 ? "met at " + String(settleRuleMetAt) + " ms\n" : String("never met\n");
         settleLog += "done\n";
         cycle.request(CycleCommand::TakeReading);
         settleStep = SettleStep::Idle;
@@ -1037,14 +1097,20 @@ void runSettleTest() {
 void loop() {
   ArduinoOTA.handle();
   runSettleTest();
+  //No network or flash work while a probe is being read: Wi-Fi transmits disturb the ADC, and the
+  //pH board should be on no longer than it must. A reading's sensors are on for about 20-60 s.
+  CycleStep step = cycle.step();
+  bool measuring = step == CycleStep::Warmup || step == CycleStep::Sampling || settleStep != SettleStep::Idle;
   //At most one slow step per pass: an upload, a settings write or one Pi fetch.
   //A skipped fetch stays due, so it runs on a later pass.
-  bool didSlowWork = sendQueuedReading();
-  if (!didSlowWork) {
-    didSlowWork = savePendingSettings();
-  }
-  if (!didSlowWork) {
-    fetchPiCache();
+  if (!measuring) {
+    bool didSlowWork = sendQueuedReading();
+    if (!didSlowWork) {
+      didSlowWork = savePendingSettings();
+    }
+    if (!didSlowWork) {
+      fetchPiCache();
+    }
   }
   delay(2);  //single core: loop() outranks loop2, so it must yield or sampling starves
 }

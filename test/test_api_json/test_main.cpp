@@ -50,9 +50,13 @@ void status_json_lists_only_taken_ph_samples(void) {
   s.phSamples[0] = 1;
   s.phSamples[1] = 2;
   s.phSamples[2] = 99;
+  s.warmupMaxMs = 60000;
+  s.lastWarmupMs = 16800;
+  s.lastWarmupSettled = true;
   std::string json = statusJson(s);
   TEST_ASSERT_NOT_EQUAL(std::string::npos, json.find("\"ph_samples\":[1.000,2.000]"));
-  TEST_ASSERT_NOT_EQUAL(std::string::npos, json.find("\"warmup_ms\":20000,\"samples\":0,\"sample_total\":20"));
+  TEST_ASSERT_NOT_EQUAL(std::string::npos, json.find("\"warmup_ms\":60000,\"samples\":0,\"sample_total\":20"));
+  TEST_ASSERT_NOT_EQUAL(std::string::npos, json.find("\"last_warmup_ms\":16800,\"last_warmup_settled\":true}"));
 }
 
 void settings_json_shape(void) {

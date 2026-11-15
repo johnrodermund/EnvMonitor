@@ -67,7 +67,10 @@ void busy_rejects_reading_with_step() {
   TEST_ASSERT_EQUAL_INT(409, r.httpCode);
   TEST_ASSERT_EQUAL_STRING("busy: warmup", r.message.c_str());
 
-  run(cycle, now, 16000);
+  //Warmup lasts until the readings settle, so step until sampling starts
+  for (int i = 0; i < 700 && cycle.step() != CycleStep::Sampling; i++) {
+    run(cycle, now, 100);
+  }
   TEST_ASSERT_TRUE(cycle.step() == CycleStep::Sampling);
   TEST_ASSERT_EQUAL_STRING("busy: sampling", dispatchCommand("reading", cycle).message.c_str());
 }

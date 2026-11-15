@@ -5,13 +5,22 @@
 
 const unsigned long interval = 600000;
 const unsigned long holdTimeout = 900000;
-const unsigned long oneMeasurement = 23000;
+const unsigned long oneMeasurement = 25000;
 
 void run(ReadingCycle &cycle, unsigned long &now, unsigned long duration, unsigned long step = 100) {
   unsigned long end = now + duration;
   while (now < end) {
     cycle.tick(now);
     now += step;
+  }
+}
+
+//Runs until the cycle reaches `target`, at most `limit` ms
+void runUntilStep(ReadingCycle &cycle, unsigned long &now, CycleStep target, unsigned long limit = 120000) {
+  unsigned long end = now + limit;
+  while (now < end && cycle.step() != target) {
+    cycle.tick(now);
+    now += 100;
   }
 }
 
@@ -37,13 +46,14 @@ void ph_probe_warms_up_before_sampling_and_powers_off_after() {
   ReadingCycle cycle(host, 2368, 1880, interval, holdTimeout);
   unsigned long now = 0;
 
-  run(cycle, now, 19000);
+  run(cycle, now, 10000);
   TEST_ASSERT_TRUE(host.phPower);
-  TEST_ASSERT_EQUAL_INT(0, host.nextSample);
+  TEST_ASSERT_TRUE(cycle.step() == CycleStep::Warmup);
 
-  run(cycle, now, 4000);
+  run(cycle, now, oneMeasurement - 10000);
   TEST_ASSERT_FALSE(host.phPower);
-  TEST_ASSERT_EQUAL_INT(20, host.nextSample);
+  TEST_ASSERT_EQUAL_INT(1, host.recorded.size());
+  TEST_ASSERT_EQUAL_INT(20, cycle.lastPhSampleCount());
 }
 
 void reading_reports_ph_uncertainty_from_sample_spread() {
@@ -202,7 +212,7 @@ void wipe_clears_readings_before_restarting() {
   TEST_ASSERT_TRUE(host.restarted);
 }
 
-void scheduled_reading_gets_the_full_warmup_after_slow_ec_read() {
+void scheduled_reading_gets_the_minimum_warmup_after_slow_ec_read() {
   FakeHost host;
   unsigned long now = 0;
   host.clock = &now;
@@ -211,7 +221,94 @@ void scheduled_reading_gets_the_full_warmup_after_slow_ec_read() {
   run(cycle, now, oneMeasurement + 3000);
 
   TEST_ASSERT_EQUAL_INT(1, host.recorded.size());
-  TEST_ASSERT_GREATER_OR_EQUAL_UINT32(20000, host.firstSampleAt - host.powerOnAt);
+  TEST_ASSERT_TRUE(cycle.lastWarmupSettled());
+  TEST_ASSERT_GREATER_OR_EQUAL_UINT32(ReadingCycle::warmupMinMs(), cycle.lastWarmupMs());
+  TEST_ASSERT_LESS_THAN_UINT32(ReadingCycle::warmupMinMs() + 5000, cycle.lastWarmupMs());
+}
+
+//Drifts 1 count per read (20 per window) for 400 reads, then holds still
+float drifts_then_settles(size_t index) {
+  return index < 400 ? 2300 - (float)index : 1900;
+}
+
+float drifts_forever(size_t index) {
+  return 2300 - (float)index;
+}
+
+//Every 20th read is a full-scale glitch, so each 20-read window holds exactly one
+float one_glitch_per_window(size_t index) {
+  return index % 20 == 7 ? 4095 : 2124;
+}
+
+void warmup_waits_until_the_board_stops_drifting() {
+  FakeHost host;
+  host.adcByIndex = drifts_then_settles;
+  ReadingCycle cycle(host, 2368, 1880, interval, holdTimeout);
+  unsigned long now = 0;
+
+  run(cycle, now, 70000);
+
+  TEST_ASSERT_EQUAL_INT(1, host.recorded.size());
+  TEST_ASSERT_TRUE(cycle.lastWarmupSettled());
+  TEST_ASSERT_GREATER_THAN_UINT32(40000, cycle.lastWarmupMs());
+  TEST_ASSERT_LESS_THAN_UINT32(ReadingCycle::warmupMs(), cycle.lastWarmupMs());
+  TEST_ASSERT_EQUAL_FLOAT(1900, cycle.lastPhAdc());
+}
+
+void warmup_gives_up_at_the_maximum_and_still_records() {
+  FakeHost host;
+  host.adcByIndex = drifts_forever;
+  ReadingCycle cycle(host, 2368, 1880, interval, holdTimeout);
+  unsigned long now = 0;
+
+  run(cycle, now, ReadingCycle::warmupMs() + 5000);
+
+  TEST_ASSERT_EQUAL_INT(1, host.recorded.size());
+  TEST_ASSERT_FALSE(cycle.lastWarmupSettled());
+  TEST_ASSERT_GREATER_OR_EQUAL_UINT32(ReadingCycle::warmupMs(), cycle.lastWarmupMs());
+  TEST_ASSERT_LESS_THAN_UINT32(ReadingCycle::warmupMs() + 200, cycle.lastWarmupMs());
+  TEST_ASSERT_FALSE(host.phPower);
+}
+
+void warmup_window_means_are_kept_for_diagnostics() {
+  FakeHost host;
+  host.adcByIndex = drifts_then_settles;
+  ReadingCycle cycle(host, 2368, 1880, interval, holdTimeout);
+  unsigned long now = 0;
+
+  run(cycle, now, 70000);
+
+  int windows = cycle.lastWarmupWindowCount();
+  TEST_ASSERT_GREATER_THAN_INT(2, windows);
+  TEST_ASSERT_FLOAT_WITHIN(0.01, 2290.5, cycle.lastWarmupWindowMean(0));  //mean of reads 0-19
+  TEST_ASSERT_EQUAL_FLOAT(1900, cycle.lastWarmupWindowMean(windows - 1));
+}
+
+void a_glitch_read_does_not_move_the_reading() {
+  FakeHost host;
+  host.adcByIndex = one_glitch_per_window;
+  ReadingCycle cycle(host, 2368, 1880, interval, holdTimeout);
+  unsigned long now = 0;
+
+  run(cycle, now, oneMeasurement);
+
+  TEST_ASSERT_EQUAL_INT(1, host.recorded.size());
+  TEST_ASSERT_EQUAL_FLOAT(2124, cycle.lastPhAdc());
+}
+
+void ph_reads_stay_on_a_105_ms_grid() {
+  FakeHost host;
+  unsigned long now = 0;
+  host.clock = &now;
+  ReadingCycle cycle(host, 2368, 1880, interval, holdTimeout);
+
+  run(cycle, now, oneMeasurement + 3000, 1);
+
+  //Warmup and sampling reads share one grid from the first read after power-on
+  TEST_ASSERT_GREATER_THAN_INT(40, host.sampleTimes.size());
+  for (size_t i = 1; i < host.sampleTimes.size(); i++) {
+    TEST_ASSERT_EQUAL_UINT32(105, host.sampleTimes[i] - host.sampleTimes[i - 1]);
+  }
 }
 
 void status_stays_busy_while_a_requested_reading_starts() {
@@ -270,9 +367,9 @@ void ph_samples_are_spaced_so_the_adc_can_recover() {
 
   run(cycle, now, oneMeasurement + 3000, 10);
 
-  TEST_ASSERT_EQUAL_INT(20, host.sampleTimes.size());
+  TEST_ASSERT_GREATER_THAN_INT(40, host.sampleTimes.size());
   for (size_t i = 1; i < host.sampleTimes.size(); i++) {
-    TEST_ASSERT_GREATER_OR_EQUAL_UINT32(100, host.sampleTimes[i] - host.sampleTimes[i - 1]);
+    TEST_ASSERT_GREATER_OR_EQUAL_UINT32(95, host.sampleTimes[i] - host.sampleTimes[i - 1]);
   }
 }
 
@@ -298,7 +395,9 @@ void resume_during_sampling_powers_off_and_discards() {
   FakeHost host;
   ReadingCycle cycle(host, 2368, 1880, interval, holdTimeout);
   unsigned long now = 0;
-  run(cycle, now, 21000);
+  runUntilStep(cycle, now, CycleStep::Sampling);
+  run(cycle, now, 500);
+  TEST_ASSERT_TRUE(cycle.step() == CycleStep::Sampling);
   TEST_ASSERT_TRUE(host.phPower);
 
   cycle.request(CycleCommand::Resume);
@@ -323,14 +422,13 @@ void step_and_progress_follow_the_reading() {
   TEST_ASSERT_TRUE(cycle.step() == CycleStep::Warmup);
   TEST_ASSERT_EQUAL_UINT32(0, cycle.warmupElapsed(now));
 
-  now = warmupBegan + 12000;
-  cycle.tick(now);
-  TEST_ASSERT_EQUAL_UINT32(12000, cycle.warmupElapsed(now));
-  TEST_ASSERT_EQUAL_UINT32(20000, ReadingCycle::warmupMs());
+  run(cycle, now, 12000);
+  TEST_ASSERT_TRUE(cycle.step() == CycleStep::Warmup);
+  TEST_ASSERT_EQUAL_UINT32(now - warmupBegan, cycle.warmupElapsed(now));
+  TEST_ASSERT_EQUAL_UINT32(60000, ReadingCycle::warmupMs());
   TEST_ASSERT_EQUAL_INT(20, ReadingCycle::sampleTotalCount());
 
-  now = warmupBegan + 20100;
-  cycle.tick(now);
+  runUntilStep(cycle, now, CycleStep::Sampling);
   TEST_ASSERT_TRUE(cycle.step() == CycleStep::Sampling);
   TEST_ASSERT_EQUAL_UINT32(0, cycle.warmupElapsed(now));
 
@@ -463,7 +561,12 @@ int main() {
   RUN_TEST(manual_measurement_is_reported_but_not_recorded);
   RUN_TEST(restart_waits_two_seconds_for_the_response);
   RUN_TEST(wipe_clears_readings_before_restarting);
-  RUN_TEST(scheduled_reading_gets_the_full_warmup_after_slow_ec_read);
+  RUN_TEST(scheduled_reading_gets_the_minimum_warmup_after_slow_ec_read);
+  RUN_TEST(warmup_waits_until_the_board_stops_drifting);
+  RUN_TEST(warmup_gives_up_at_the_maximum_and_still_records);
+  RUN_TEST(warmup_window_means_are_kept_for_diagnostics);
+  RUN_TEST(a_glitch_read_does_not_move_the_reading);
+  RUN_TEST(ph_reads_stay_on_a_105_ms_grid);
   RUN_TEST(status_stays_busy_while_a_requested_reading_starts);
   RUN_TEST(status_stays_busy_while_a_held_measurement_starts);
   RUN_TEST(last_ph_samples_and_average_are_kept_for_diagnostics);

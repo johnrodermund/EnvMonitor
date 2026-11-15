@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cmath>
 #include <string>
+#include "ph_sampling.h"
 #include "sensor_math.h"
 
 struct Reading {
@@ -131,13 +132,41 @@ public:
     if (diff <= 0) {
       return 0;
     }
-    unsigned long limit = warmupTime;
+    unsigned long limit = warmupMax;
     unsigned long elapsed = (unsigned long)diff;
     return elapsed > limit ? limit : elapsed;
   }
 
+  //Longest the pH board stays powered waiting to settle
   static unsigned long warmupMs() {
-    return warmupTime;
+    return warmupMax;
+  }
+
+  static unsigned long warmupMinMs() {
+    return warmupMin;
+  }
+
+  //Largest change in ADC counts between two warmup windows that still counts as settled
+  static float settleStepCounts() {
+    return settleCounts;
+  }
+
+  //How long the last pH warmup lasted from power-on, and whether it settled or hit warmupMax
+  unsigned long lastWarmupMs() const {
+    return lastWarmup;
+  }
+
+  bool lastWarmupSettled() const {
+    return lastSettled;
+  }
+
+  //Hum-free means of the last warmup's 2.1 s windows, oldest first, to show how the board settled
+  int lastWarmupWindowCount() const {
+    return lastWindowCount;
+  }
+
+  float lastWarmupWindowMean(int index) const {
+    return lastWindowMeans[index];
   }
 
   int samplesTaken() const {
@@ -180,6 +209,11 @@ public:
       case Phase::PowerOn:
         warmupStart = now;
         host.setPhPower(true);
+        schedule.reset();
+        settle.reset();
+        windowSum = 0;
+        windowReads = 0;
+        windowCount = 0;
         phase = Phase::Warmup;
         break;
 
@@ -191,20 +225,36 @@ public:
         }
         break;
 
+      //The pH board drifts after power-on. Average hum-free windows and start sampling once one
+      //matches the window before it, but never before warmupMin, and give up waiting at warmupMax
+      //so the probe isn't powered for long.
       case Phase::Warmup:
-        if (now - warmupStart > warmupTime) {
-          sampleCount = 0;
-          phase = Phase::Sampling;
+        if (now - warmupStart >= warmupMax) {
+          beginSampling(now, false);
+        } else if (schedule.due(now)) {
+          windowSum += host.readPhAdc();
+          windowReads++;
+          if (windowReads == HUM_WINDOW) {
+            float mean = windowSum / HUM_WINDOW;
+            windowSum = 0;
+            windowReads = 0;
+            if (windowCount < maxWindows) {
+              windowMeans[windowCount++] = mean;
+            }
+            if (settle.add(mean, now - warmupStart)) {
+              beginSampling(now, true);
+            }
+          }
         }
         break;
 
+      //Same grid as the warmup, so reads never come back to back (that drains the ADC's sample
+      //capacitor and reads low) and the window spans whole mains cycles
       case Phase::Sampling:
         if (sampleCount < sampleTotal) {
-          //Back-to-back reads drain the ADC's sample capacitor and read low
-          if (sampleCount == 0 || now - lastSampleAt >= sampleSpacing) {
+          if (schedule.due(now)) {
             samples[sampleCount] = host.readPhAdc();
-            sampleCount++;
-            lastSampleAt = now;
+            sampleCount = sampleCount + 1;
           }
         } else {
           host.setPhPower(false);
@@ -225,9 +275,14 @@ private:
   enum class Phase { Waiting, Holding, PowerOn, Warmup, Sampling, Restarting };
   enum class Job { Reading, Ph4, Ph7, Manual };
 
-  static const int sampleTotal = 20;
-  static const unsigned long warmupTime = 20000;
-  static const unsigned long sampleSpacing = 100;
+  static const int sampleTotal = HUM_WINDOW;
+  static const int sampleTrim = 2;  //lowest and highest reads dropped from the average
+  //Starting values until the settle test on the device measures the board: settled means two
+  //window means within settleCounts ADC counts (about 0.025 pH)
+  static const unsigned long warmupMin = 15000;
+  static const unsigned long warmupMax = 60000;
+  static constexpr float settleCounts = 4;
+  static const int maxWindows = warmupMax / (HUM_WINDOW * HUM_SPACING_MS) + 2;
   static const unsigned long restartDelay = 2000;
 
   CycleHost &host;
@@ -247,7 +302,16 @@ private:
   Reading manual;
   float samples[sampleTotal];
   volatile int sampleCount = 0;
-  unsigned long lastSampleAt = 0;
+  SampleSchedule schedule;
+  WarmupSettle settle{ warmupMin, settleCounts };
+  float windowSum = 0;
+  int windowReads = 0;
+  float windowMeans[maxWindows] = {};
+  int windowCount = 0;
+  float lastWindowMeans[maxWindows] = {};
+  volatile int lastWindowCount = 0;
+  volatile unsigned long lastWarmup = 0;
+  volatile bool lastSettled = false;
   float lastSamples[sampleTotal] = {};
   int lastCount = 0;
   float lastAdc = 0;
@@ -345,12 +409,19 @@ private:
     phase = Phase::Holding;
   }
 
-  void finishMeasurement(unsigned long now) {
-    float phAdc = 0;
-    for (int i = 0; i < sampleTotal; i++) {
-      phAdc += samples[i];
+  void beginSampling(unsigned long now, bool settled) {
+    lastWarmup = now - warmupStart;
+    lastSettled = settled;
+    for (int i = 0; i < windowCount; i++) {
+      lastWindowMeans[i] = windowMeans[i];
     }
-    phAdc = phAdc / sampleTotal;
+    lastWindowCount = windowCount;
+    sampleCount = 0;
+    phase = Phase::Sampling;
+  }
+
+  void finishMeasurement(unsigned long now) {
+    float phAdc = trimmedMean(samples, sampleTotal, sampleTrim);
     for (int i = 0; i < sampleTotal; i++) {
       lastSamples[i] = samples[i];
     }
