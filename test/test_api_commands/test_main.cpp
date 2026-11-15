@@ -5,7 +5,7 @@
 
 const unsigned long interval = 600000;
 const unsigned long holdTimeout = 900000;
-const unsigned long oneMeasurement = 23000;
+const unsigned long oneMeasurement = 35000;
 
 void run(ReadingCycle &cycle, unsigned long &now, unsigned long duration, unsigned long step = 100) {
   unsigned long end = now + duration;

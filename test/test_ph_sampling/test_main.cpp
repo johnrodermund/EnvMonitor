@@ -76,27 +76,6 @@ void trimmed_mean_with_too_much_trim_uses_all_values() {
   TEST_ASSERT_EQUAL_FLOAT(2, trimmedMean(values, 2, 1));
 }
 
-void settle_needs_the_minimum_time_and_two_close_windows() {
-  WarmupSettle settle(15000, 4);
-  settle.reset();
-
-  TEST_ASSERT_FALSE(settle.add(2000, 2100));   //first window, nothing to compare
-  TEST_ASSERT_FALSE(settle.add(2000, 4200));   //close, but before the minimum
-  TEST_ASSERT_FALSE(settle.add(2050, 14700));
-  TEST_ASSERT_FALSE(settle.add(2030, 16800));  //past the minimum, still moving 20 counts
-  TEST_ASSERT_TRUE(settle.add(2027, 18900));   //within 4 counts of the last window
-}
-
-void settle_reset_forgets_the_previous_window() {
-  WarmupSettle settle(0, 4);
-  settle.reset();
-  settle.add(2000, 2100);
-  settle.reset();
-
-  TEST_ASSERT_FALSE(settle.add(2000, 2100));
-  TEST_ASSERT_TRUE(settle.add(2001, 4200));
-}
-
 int main() {
   UNITY_BEGIN();
   RUN_TEST(schedule_is_due_at_once_then_on_a_fixed_grid);
@@ -106,7 +85,5 @@ int main() {
   RUN_TEST(trimmed_mean_drops_the_extremes);
   RUN_TEST(trimmed_mean_leaves_the_input_unsorted);
   RUN_TEST(trimmed_mean_with_too_much_trim_uses_all_values);
-  RUN_TEST(settle_needs_the_minimum_time_and_two_close_windows);
-  RUN_TEST(settle_reset_forgets_the_previous_window);
   return UNITY_END();
 }

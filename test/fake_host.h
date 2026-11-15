@@ -19,6 +19,7 @@ struct FakeHost : CycleHost {
   std::vector<CycleStatus> statusDuringHardware;
   unsigned long powerOnAt = 0;
   unsigned long firstSampleAt = 0;
+  unsigned long firstSamplingAt = 0;  //first read while the watched cycle is sampling
   std::vector<unsigned long> sampleTimes;
 
   void spendTime(unsigned long duration) {
@@ -41,6 +42,9 @@ struct FakeHost : CycleHost {
     }
     if (clock) {
       sampleTimes.push_back(*clock);
+      if (firstSamplingAt == 0 && watched && watched->step() == CycleStep::Sampling) {
+        firstSamplingAt = *clock;
+      }
     }
     size_t index = nextSample++;
     if (adcByIndex) {

@@ -30,7 +30,7 @@
     "step": "warmup",
     "job": "reading",
     "warmup_elapsed_ms": 12000,
-    "warmup_ms": 60000,
+    "warmup_ms": 30000,
     "samples": 0,
     "sample_total": 20,
     "ph4_ready": false,
@@ -72,8 +72,7 @@
       2044
     ],
     "last_ec_adc": 839.85,
-    "last_warmup_ms": 16800,
-    "last_warmup_settled": true
+    "last_warmup_ms": 30045
   },
   "api": {
     "queued": 0,
