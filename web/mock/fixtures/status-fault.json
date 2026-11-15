@@ -71,7 +71,9 @@
       4095,
       4095
     ],
-    "last_ec_adc": 839.85
+    "last_ec_adc": 839.85,
+    "last_warmup_ms": 16800,
+    "last_warmup_settled": true
   },
   "api": {
     "queued": 0,

@@ -7,6 +7,7 @@
 struct FakeHost : CycleHost {
   std::vector<Reading> recorded;
   std::vector<float> adcSamples = {2124};
+  float (*adcByIndex)(size_t index) = nullptr;  //when set, replaces adcSamples
   size_t nextSample = 0;
   bool phPower = false;
   float savedPh4 = 0;
@@ -41,7 +42,11 @@ struct FakeHost : CycleHost {
     if (clock) {
       sampleTimes.push_back(*clock);
     }
-    return adcSamples[nextSample++ % adcSamples.size()];
+    size_t index = nextSample++;
+    if (adcByIndex) {
+      return adcByIndex(index);
+    }
+    return adcSamples[index % adcSamples.size()];
   }
   void setPhPower(bool on) override {
     if (on && clock) {

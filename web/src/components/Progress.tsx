@@ -9,7 +9,8 @@ export function progressInfo(cycle: CycleStatus): { label: string; frac: number 
   if (cycle.step === 'warmup') {
     const done = Math.round((cycle.warmup_elapsed_ms ?? 0) / 1000);
     const total = Math.round((cycle.warmup_ms ?? 0) / 1000);
-    return { label: `Warming pH probe ${done}/${total} s`, frac: total > 0 ? done / total : null };
+    //The warmup ends once readings settle, so warmup_ms is only its upper limit
+    return { label: `Warming pH probe ${done} s (max ${total} s)`, frac: total > 0 ? done / total : null };
   }
   if (cycle.step === 'sampling') {
     const n = cycle.samples ?? 0;

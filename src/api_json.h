@@ -50,6 +50,7 @@ struct StatusView {
   std::string step;
   std::string job;
   unsigned long warmupElapsedMs = 0;
+  unsigned long warmupMaxMs = 0;
   int samplesTaken = 0;
   bool ph4Ready = false;
   float pendingPh4 = 0;
@@ -61,6 +62,8 @@ struct StatusView {
   float phSamples[20] = {};
   int phSampleCount = 0;
   float lastEcAdc = 0;
+  unsigned long lastWarmupMs = 0;
+  bool lastWarmupSettled = false;
   int apiQueued = 0;
   int apiLastHttp = 0;
   unsigned long apiFailures = 0;
@@ -95,7 +98,7 @@ inline std::string statusJson(const StatusView &s) {
   j += ",\"step\":" + jsonString(s.step);
   j += ",\"job\":" + jsonString(s.job);
   j += ",\"warmup_elapsed_ms\":" + std::to_string(s.warmupElapsedMs);
-  j += ",\"warmup_ms\":20000";
+  j += ",\"warmup_ms\":" + std::to_string(s.warmupMaxMs);
   j += ",\"samples\":" + std::to_string(s.samplesTaken);
   j += ",\"sample_total\":20";
   j += ",\"ph4_ready\":" + jsonBool(s.ph4Ready);
@@ -114,7 +117,9 @@ inline std::string statusJson(const StatusView &s) {
     if (i > 0) j += ",";
     j += jsonNumber(s.phSamples[i]);
   }
-  j += "],\"last_ec_adc\":" + jsonNumber(s.lastEcAdc) + "}";
+  j += "],\"last_ec_adc\":" + jsonNumber(s.lastEcAdc);
+  j += ",\"last_warmup_ms\":" + std::to_string(s.lastWarmupMs);
+  j += ",\"last_warmup_settled\":" + jsonBool(s.lastWarmupSettled) + "}";
   j += ",\"api\":{\"queued\":" + std::to_string(s.apiQueued);
   j += ",\"last_http\":" + std::to_string(s.apiLastHttp);
   j += ",\"failures\":" + std::to_string(s.apiFailures);

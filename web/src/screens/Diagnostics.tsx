@@ -94,6 +94,12 @@ export function Diagnostics() {
         <p>
           pH average: <strong>{raw(s.diag.last_ph_adc)}</strong> · EC: <strong>{raw(s.diag.last_ec_adc)}</strong>
         </p>
+        {s.diag.last_warmup_ms ? (
+          <p>
+            Last pH warmup: <strong>{Math.round(s.diag.last_warmup_ms / 1000)} s</strong>,{' '}
+            {s.diag.last_warmup_settled ? 'settled' : 'stopped at the limit before settling'}
+          </p>
+        ) : null}
         {samples.length > 0 ? <SampleChart samples={samples} /> : <p class="muted small">No pH samples yet</p>}
       </section>
       <section class="panel">
