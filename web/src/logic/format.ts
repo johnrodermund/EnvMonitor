@@ -19,19 +19,30 @@ export function slope(perHour: number | null, unit: string): string {
   return perHour > 0 ? `+${mag} ${unit}/h ↑` : `−${mag} ${unit}/h ↓`;
 }
 
-/** Device times are local ISO strings with no zone; show them as "YYYY-MM-DD HH:MM". */
-export function localTime(iso: string | null): string {
-  if (!iso) return DASH;
-  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/.exec(iso);
-  return m ? `${m[1]} ${m[2]}` : iso;
+const pad2 = (n: number) => String(n).padStart(2, '0');
+
+/** "14:05", or "2:05 PM" in 12 h format. */
+export function hm(hours: number, minutes: number, format: '24' | '12' = '24'): string {
+  if (format === '24') return `${pad2(hours)}:${pad2(minutes)}`;
+  return `${hours % 12 || 12}:${pad2(minutes)} ${hours < 12 ? 'AM' : 'PM'}`;
 }
 
-/** Pi report times are UTC ISO strings; show them as local "YYYY-MM-DD HH:MM". */
-export function reportLocalTime(iso: string): string {
+export function clock(d: Date, format: '24' | '12' = '24'): string {
+  return hm(d.getHours(), d.getMinutes(), format);
+}
+
+/** Device times are local ISO strings with no zone; show them as "YYYY-MM-DD HH:MM". */
+export function localTime(iso: string | null, format: '24' | '12' = '24'): string {
+  if (!iso) return DASH;
+  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/.exec(iso);
+  return m ? `${m[1]} ${hm(Number(m[2]), Number(m[3]), format)}` : iso;
+}
+
+/** Pi report and event times are UTC ISO strings; show them as local "YYYY-MM-DD HH:MM". */
+export function reportLocalTime(iso: string, format: '24' | '12' = '24'): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return DASH;
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${clock(d, format)}`;
 }
 
 /** EC unit label: the device refers EC to 25 C whenever its temperature coefficient isn't 0. */

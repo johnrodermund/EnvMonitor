@@ -1,15 +1,13 @@
-import { DASH } from './format';
+import { DASH, clock } from './format';
+
+export { clock };
 import type { PiEntry, StatusJson } from '../types';
 
-export function clock(d: Date): string {
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-}
-
-export function nextReading(time: string | null, intervalMin: number | null): string {
+export function nextReading(time: string | null, intervalMin: number | null, format: '24' | '12' = '24'): string {
   if (!time || !intervalMin) return DASH;
   const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(time);
   if (!m) return DASH;
-  return clock(new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5] + intervalMin));
+  return clock(new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5] + intervalMin), format);
 }
 
 /** The single line the review panel shows when the Pi data is stale, missing or empty. */

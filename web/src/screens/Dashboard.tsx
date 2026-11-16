@@ -9,9 +9,14 @@ import { BUILTIN_RANGES, levelFor, tagsFor } from '../logic/status';
 import { StatusContext } from '../status-context';
 import { usePoll } from '../usePoll';
 import type { MetricStats } from '../types';
+import { AppearanceContext } from '../appearance-context';
+import { displayTemp, displayTempRate, tempUnitLabel } from '../logic/appearance';
 
 export function Dashboard() {
   const { data: status, error, at, refresh } = useContext(StatusContext);
+  const { appearance } = useContext(AppearanceContext);
+  const unit = appearance.temp_unit;
+  const tf = appearance.time_format;
   const pi = usePoll(getPi, 60000);
   const rangesPoll = usePoll(getRanges, 60000);
   const [msg, setMsg] = useState<string | null>(null);
@@ -56,15 +61,16 @@ export function Dashboard() {
   const cards = [
     { key: 'ph' as const, label: 'pH', unit: '', slopeUnit: 'pH', digits: 2, value: last?.ph ?? null, avg: status.averages.ph, st: stat('ph'), range: ranges.ph },
     { key: 'ec' as const, label: 'EC', unit: ecUnit(status.ec_temp_coef), slopeUnit: 'µS/cm', digits: 0, value: last?.ec ?? null, avg: status.averages.ec, st: stat('ec'), range: ranges.ec },
-    { key: 'temp' as const, label: 'Temperature', unit: '°F', slopeUnit: '°F', digits: 1, value: last?.wt ?? null, avg: status.averages.wt, st: stat('water_temp_f'), range: ranges.temp },
+    // Levels compare the logged °F with the °F ranges; only the shown numbers convert
+    { key: 'temp' as const, label: 'Temperature', unit: tempUnitLabel(unit), slopeUnit: tempUnitLabel(unit), digits: 1, value: last?.wt ?? null, avg: status.averages.wt, st: stat('water_temp_f'), range: ranges.temp },
   ];
 
   return (
     <div class={error ? 'greyed' : ''}>
       <h1>{status.title || 'EnvMonitor'}</h1>
       <p class="statusline">
-        Last reading {localTime(last?.time ?? null)} · next {nextReading(last?.time ?? null, status.interval_min)}
-        {error && at ? ` · as of ${clock(new Date(at))}` : ''}
+        Last reading {localTime(last?.time ?? null, tf)} · next {nextReading(last?.time ?? null, status.interval_min, tf)}
+        {error && at ? ` · as of ${clock(new Date(at), tf)}` : ''}
       </p>
       <Progress status={status} />
       {noReadings ? (
@@ -78,10 +84,11 @@ export function Dashboard() {
               unit={c.unit}
               slopeUnit={c.slopeUnit}
               digits={c.digits}
-              value={c.value}
-              mean={c.avg[0]}
-              spread={c.avg[1]}
-              slopePerHour={c.st?.slope_per_hour ?? null}
+              value={c.key === 'temp' ? displayTemp(c.value, unit) : c.value}
+              mean={c.key === 'temp' ? displayTemp(c.avg[0], unit) : c.avg[0]}
+              spread={c.key === 'temp' ? displayTempRate(c.avg[1], unit) : c.avg[1]}
+              slopePerHour={c.key === 'temp' ? displayTempRate(c.st?.slope_per_hour ?? null, unit) : (c.st?.slope_per_hour ?? null)}
+              details={appearance.tile_details}
               level={levelFor(c.value, c.range)}
               tags={tagsFor(c.key, flags)}
               extra={c.key === 'ph' && last?.ph_pm != null ? `± ${fmt(last.ph_pm, 2)}` : null}

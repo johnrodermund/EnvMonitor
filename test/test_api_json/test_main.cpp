@@ -63,8 +63,9 @@ void settings_json_shape(void) {
   limits.feedingEnabled = true;
   TEST_ASSERT_EQUAL_STRING(
       "{\"interval_min\":10,\"title\":\"T\",\"topup_min_drop\":3.000,\"feeding_min_rise\":5.000,"
-      "\"feeding_enabled\":true,\"ec_temp_coef\":1.670}",
-      settingsJson(10, "T", limits, 1.67f).c_str());
+      "\"feeding_enabled\":true,\"ec_temp_coef\":1.670,\"theme\":\"system\",\"accent\":\"green\","
+      "\"text_size\":\"normal\",\"temp_unit\":\"F\",\"time_format\":\"24\",\"chart_window\":\"24\",\"tile_details\":true}",
+      settingsJson(10, "T", limits, 1.67f, Appearance()).c_str());
 }
 
 //The log keeps raw EC; every reply applies the current coefficient, so a change re-applies to all history

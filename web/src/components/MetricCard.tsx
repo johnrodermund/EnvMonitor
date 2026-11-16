@@ -13,27 +13,36 @@ export interface MetricCardProps {
   level: Level;
   tags: string[];
   extra?: string | null;
+  /** Show the average and 24 h trend lines (Appearance → Dashboard tiles) */
+  details?: boolean;
 }
 
+const LEVEL_TEXT: Record<Level, string> = { ok: 'In range', warn: 'Off target', fault: 'Sensor fault' };
+
+/** One reading: a large value in body-text colour, with the range status as a stripe and a badge. */
 export function MetricCard(p: MetricCardProps) {
+  const details = p.details ?? true;
   return (
     <div class={`card level-${p.level}`}>
-      <div class="card-label">
-        {p.label}
-        {p.unit && <span class="unit"> {p.unit}</span>}
+      <div class="card-head">
+        <div class="card-label">{p.label}</div>
+        <span class={`level-badge level-${p.level}`}>{LEVEL_TEXT[p.level]}</span>
       </div>
-      {p.level === 'fault' ? (
-        <div class="card-value">
-          Sensor fault <small>{p.value === null ? DASH : fmt(p.value, p.digits)}</small>
-        </div>
-      ) : (
-        <div class="card-value">{fmt(p.value, p.digits)}</div>
+      <div class="card-value">
+        {p.level === 'fault' && p.value === null ? DASH : fmt(p.value, p.digits)}
+        {p.unit && <small class="unit"> {p.unit}</small>}
+        {p.extra && <small> {p.extra}</small>}
+      </div>
+      {details && (
+        <>
+          <div class="card-line">
+            Average <strong>{fmt(p.mean, p.digits)}</strong> ± {fmt(p.spread, p.digits)}
+          </div>
+          <div class="card-line">
+            24 h trend <strong>{slope(p.slopePerHour, p.slopeUnit)}</strong>
+          </div>
+        </>
       )}
-      {p.extra && <div class="card-line">{p.extra}</div>}
-      <div class="card-line">
-        Avg {fmt(p.mean, p.digits)} ± {fmt(p.spread, p.digits)}
-      </div>
-      <div class="card-line">24 h: {slope(p.slopePerHour, p.slopeUnit)}</div>
       {p.tags.length > 0 && (
         <div class="tags">
           {p.tags.map((t) => (

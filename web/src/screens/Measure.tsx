@@ -1,13 +1,18 @@
 import { ecUnit } from '../logic/format';
 import { Progress } from '../components/Progress';
 import { useWizard } from './useWizard';
+import { useContext } from 'preact/hooks';
+import { AppearanceContext } from '../appearance-context';
+import { displayTemp, tempUnitLabel } from '../logic/appearance';
 
 const num = (v: number | null | undefined, d: number) => (v === null || v === undefined ? '—' : v.toFixed(d));
 
 export function Measure() {
   const { w, data, msg, sending, offline, busy, begin, next, cancel, reset } = useWizard('measure');
+  const { appearance } = useContext(AppearanceContext);
   if (!data || !w) return <p class="muted">{offline ? 'Device not responding' : 'Loading…'}</p>;
   const lock = sending || busy || offline;
+  const unit = appearance.temp_unit;
 
   return (
     <div>
@@ -37,7 +42,7 @@ export function Measure() {
           <div class="cards">
             <div class="card"><div class="card-label">pH</div><div class="card-value">{num(data.manual.ph, 2)}</div></div>
             <div class="card"><div class="card-label">EC <span class="unit">{ecUnit(data.ec_temp_coef)}</span></div><div class="card-value">{num(data.manual.ec, 0)}</div></div>
-            <div class="card"><div class="card-label">Temperature <span class="unit">°F</span></div><div class="card-value">{num(data.manual.wt, 1)}</div></div>
+            <div class="card"><div class="card-label">Temperature <span class="unit">{tempUnitLabel(unit)}</span></div><div class="card-value">{num(displayTemp(data.manual.wt, unit), 1)}</div></div>
           </div>
           <div class="actions">
             <button class="primary" onClick={reset}>Done</button>
