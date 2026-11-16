@@ -1,0 +1,60 @@
+{
+  "events": [
+    {
+      "seq": 4,
+      "occurred_at": "2026-11-06T07:10:00Z",
+      "kind": "topup",
+      "detail": "unknown",
+      "source": "detected",
+      "status": "suggested",
+      "ec_before": 655.2,
+      "ec_after": 648.9,
+      "ph_before": 5.86,
+      "ph_after": 5.9,
+      "note": "",
+      "backed_up": false
+    },
+    {
+      "seq": 3,
+      "occurred_at": "2026-11-05T22:00:00Z",
+      "kind": "feeding",
+      "detail": null,
+      "source": "manual",
+      "status": "confirmed",
+      "ec_before": 650.1,
+      "ec_after": 652.0,
+      "ph_before": 5.95,
+      "ph_after": 5.93,
+      "note": "flakes | a \"pinch\"",
+      "backed_up": true
+    },
+    {
+      "seq": 2,
+      "occurred_at": "2026-11-05T17:20:00Z",
+      "kind": "topup",
+      "detail": "di",
+      "source": "detected",
+      "status": "confirmed",
+      "ec_before": 653.4,
+      "ec_after": 646.0,
+      "ph_before": 5.99,
+      "ph_after": 6.02,
+      "note": "",
+      "backed_up": true
+    },
+    {
+      "seq": 1,
+      "occurred_at": "2026-11-05T09:40:00Z",
+      "kind": "topup",
+      "detail": "unknown",
+      "source": "detected",
+      "status": "rejected",
+      "ec_before": 651.0,
+      "ec_after": 647.5,
+      "ph_before": 6.0,
+      "ph_after": 5.97,
+      "note": "probe cleaned",
+      "backed_up": true
+    }
+  ]
+}

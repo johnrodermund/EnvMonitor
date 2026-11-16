@@ -59,7 +59,25 @@ void status_json_lists_only_taken_ph_samples(void) {
 }
 
 void settings_json_shape(void) {
-  TEST_ASSERT_EQUAL_STRING("{\"interval_min\":10,\"title\":\"T\"}", settingsJson(10, "T").c_str());
+  DetectLimits limits;
+  limits.feedingEnabled = true;
+  TEST_ASSERT_EQUAL_STRING(
+      "{\"interval_min\":10,\"title\":\"T\",\"topup_min_drop\":3.000,\"feeding_min_rise\":5.000,"
+      "\"feeding_enabled\":true}",
+      settingsJson(10, "T", limits).c_str());
+}
+
+void status_json_reports_events(void) {
+  StatusView s;
+  s.eventsCount = 12;
+  s.eventsUnsynced = 3;
+  s.eventsDropped = 1;
+  s.eventsClockAhead = 2;
+  s.eventsRejected = 4;
+  s.eventsLastHttp = 201;
+  TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                        statusJson(s).find("\"events\":{\"count\":12,\"unsynced\":3,\"dropped_unsynced\":1,"
+                                           "\"clock_ahead\":2,\"rejected\":4,\"last_sync_http\":201}}"));
 }
 
 void validate_settings_rules(void) {
@@ -90,6 +108,7 @@ int main() {
   RUN_TEST(status_json_escapes_title);
   RUN_TEST(status_json_lists_only_taken_ph_samples);
   RUN_TEST(settings_json_shape);
+  RUN_TEST(status_json_reports_events);
   RUN_TEST(validate_settings_rules);
   return UNITY_END();
 }

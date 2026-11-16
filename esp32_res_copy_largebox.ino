@@ -12,6 +12,8 @@
 #include "src/reading_cycle.h"
 #include "src/api_commands.h"
 #include "src/api_json.h"
+#include "src/event_api.h"
+#include "src/event_sync.h"
 #include "src/pi_cache.h"
 #include "src/ranges.h"
 #include "src/reading_log.h"
@@ -85,6 +87,18 @@ unsigned long apiDelivered = 0;
 unsigned long apiRejected = 0;
 unsigned long apiNoClock = 0;
 
+// Tank events: detected top-ups and feedings plus events the owner logs. eventsLock guards events and
+// eventsSavePending: the sampling task offers detections, handlers edit, and loop() saves /events.txt and
+// syncs one changed event per pass to <url>/events/<uid>, sharing the readings upload's backoff.
+EventLog<100> events;
+SemaphoreHandle_t eventsLock;
+bool eventsSavePending = false;
+int eventsLastHttp = 0;
+unsigned long eventsRejected = 0;
+// Detection settings, guarded by settingsLock and saved to NVS namespace "events" by loop()
+DetectLimits detectLimits;
+bool hasPendingDetect = false;
+
 //Saved API settings as handlers see them; defined up here because the .ino prototypes need it
 struct SavedApiConfig {
   String url;
@@ -110,9 +124,11 @@ public:
     return readFile(path).c_str();
   }
 
-  //Written to a temporary file first so a power cut leaves the last good save
+  //Written to a temporary file first so a power cut leaves the last good save. Each path has its own
+  //temporary file: readings are saved by the sampling task and events by loop(), possibly at once.
   void write(const char *path, const std::string &text) {
-    const char *tempPath = "/readings.tmp";
+    String temp = String(path) + ".tmp";
+    const char *tempPath = temp.c_str();
     File file = LittleFS.open(tempPath, "w");
     if (!file) {
       Serial.println("Failed to open file for writing");
@@ -144,6 +160,71 @@ String getDateTime() {
   strftime(timeStringBuff, sizeof(timeStringBuff), "%Y,%m-1,%d,%H,%M,%S", &timeinfo);
 
   return timeStringBuff;
+}
+
+//UTC seconds of a reading log timestamp (local time, converted with the TZ configTime set), or 0
+long long epochFromLog(const char *text) {
+  LogTime t;
+  if (!parseLogTimestamp(text, t)) {
+    return 0;
+  }
+  struct tm local = {};
+  local.tm_year = t.year - 1900;
+  local.tm_mon = t.month - 1;
+  local.tm_mday = t.day;
+  local.tm_hour = t.hour;
+  local.tm_min = t.minute;
+  local.tm_sec = t.second;
+  local.tm_isdst = -1;  //let the TZ rules decide
+  return (long long)mktime(&local);
+}
+
+// Used only by the sampling task, in detectEvents(); static so they stay off its stack
+DetectSample detectSamples[totalcount];
+char detectTimes[totalcount][24];
+
+//Runs the detection rule over the reading log after each recorded reading, and fills before/after
+//values of events that lack them. Copies the log under readingsLock, then changes events under eventsLock.
+void detectEvents() {
+  long long now = time(nullptr);
+  if (!clockIsSet(now)) {
+    return;  //no event gets a timestamp from an unsynced clock
+  }
+  xSemaphoreTake(readingsLock, portMAX_DELAY);
+  int count = readings.size();
+  for (int i = 0; i < count; i++) {
+    snprintf(detectTimes[i], sizeof(detectTimes[i]), "%s", readings.timestampAt(i));
+    detectSamples[i].ec = readings.ec().getOrderedValue(i);
+    detectSamples[i].ph = readings.ph().getOrderedValue(i);
+  }
+  xSemaphoreGive(readingsLock);
+  if (count == 0 || !clockIsSet(epochFromLog(detectTimes[count - 1]))) {
+    return;  //the newest reading has no usable time
+  }
+  int usable = 0;
+  for (int i = 0; i < count; i++) {
+    long long epoch = epochFromLog(detectTimes[i]);
+    if (!clockIsSet(epoch)) {
+      continue;  //taken before NTP sync
+    }
+    detectSamples[usable] = detectSamples[i];
+    detectSamples[usable].epoch = epoch;
+    usable++;
+  }
+  xSemaphoreTake(settingsLock, portMAX_DELAY);
+  DetectLimits limits = detectLimits;
+  xSemaphoreGive(settingsLock);
+  Candidate candidate;
+  if (usable >= DETECT_WINDOW) {
+    candidate = detectAt(detectSamples + usable - DETECT_WINDOW, limits);
+  }
+  xSemaphoreTake(eventsLock, portMAX_DELAY);
+  bool changed = events.offerDetected(candidate, now);
+  changed = events.fillDeltas(detectSamples, usable, now) || changed;
+  if (changed) {
+    eventsSavePending = true;
+  }
+  xSemaphoreGive(eventsLock);
 }
 
 float lastEcAdc = 0;
@@ -232,6 +313,7 @@ public:
     xSemaphoreGive(readingsLock);
     readingStore.write(readings.path(), text);  //the flash write happens outside the lock
     queueForApi(reading);
+    detectEvents();
   }
 
   //Only queues; loop() does the network call so sampling never waits on the API
@@ -305,7 +387,85 @@ String apiStatus() {
   return "api url=" + (saved.url.length() ? saved.url : String("(not set)")) + " token=" + (saved.tokenSet ? "set" : "not set") +
          " device=" + saved.device + "\napi queued=" + String(queued) + " delivered=" + String(apiDelivered) +
          " rejected=" + String(apiRejected) + " dropped=" + String(dropped) + " skipped_no_clock=" + String(apiNoClock) +
-         " last_http=" + String(apiLastCode) + " failures=" + String(apiFailures) + "\n";
+         " last_http=" + String(apiLastCode) + " failures=" + String(apiFailures) + "\n" + eventsStatus();
+}
+
+String eventsStatus() {
+  long long now = time(nullptr);
+  xSemaphoreTake(eventsLock, portMAX_DELAY);
+  String text = "events count=" + String(events.size()) + " unsynced=" + String(events.dirtyCount()) +
+                " dropped_unsynced=" + String(events.droppedUnsynced()) +
+                " clock_ahead=" + String(events.futureCount(now));
+  xSemaphoreGive(eventsLock);
+  return text + " rejected=" + String(eventsRejected) + " last_http=" + String(eventsLastHttp) + "\n";
+}
+
+//Writes /events.txt when events changed. Returns true when it wrote.
+bool saveEvents() {
+  xSemaphoreTake(eventsLock, portMAX_DELAY);
+  bool pending = eventsSavePending;
+  std::string text;
+  if (pending) {
+    text = events.saveText();
+    eventsSavePending = false;
+  }
+  xSemaphoreGive(eventsLock);
+  if (pending) {
+    readingStore.write(events.path(), text);
+  }
+  return pending;
+}
+
+//PUTs one changed event to <url>/events/<uid>, sharing the readings upload's backoff.
+//An event changed while its PUT was in flight stays dirty. Returns true when it made an HTTP request.
+bool syncNextEvent() {
+  if (apiUrl.length() == 0 || apiToken.length() == 0 || WiFi.status() != WL_CONNECTED) {
+    return false;
+  }
+  if (apiNextAttempt != 0 && (long)(millis() - apiNextAttempt) < 0) {
+    return false;
+  }
+  long long now = time(nullptr);
+  if (!clockIsSet(now)) {
+    return false;  //can't tell an updated_at from a fast clock without NTP time
+  }
+  xSemaphoreTake(eventsLock, portMAX_DELAY);
+  const TankEvent *next = events.nextDirty(now);
+  TankEvent event;
+  if (next) {
+    event = *next;
+  }
+  xSemaphoreGive(eventsLock);
+  if (!next) {
+    return false;
+  }
+
+  HTTPClient http;
+  http.setConnectTimeout(3000);
+  http.setTimeout(3000);
+  http.begin(apiUrl + eventSyncPath(apiDevice.c_str(), event).c_str());
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("Authorization", "Bearer " + apiToken);
+  int code = http.PUT(String(eventSyncJson(apiDevice.c_str(), event).c_str()));
+  http.end();
+  eventsLastHttp = code;
+
+  SendOutcome outcome = eventSyncOutcome(code);
+  if (outcome == SendOutcome::RetryLater) {
+    apiFailures++;
+    apiNextAttempt = millis() + retryDelayMs(apiFailures);
+    return true;
+  }
+  if (outcome == SendOutcome::Rejected) {
+    eventsRejected++;  //the Pi will never take this version; the next edit is sent again
+  }
+  apiFailures = 0;
+  apiNextAttempt = 0;
+  xSemaphoreTake(eventsLock, portMAX_DELAY);
+  events.markSynced(event.seq, event.dirtyGen);
+  eventsSavePending = true;  //the synced state is saved too, so a reboot doesn't resend everything
+  xSemaphoreGive(eventsLock);
+  return true;
 }
 
 //Sends the oldest queued reading, one per call, backing off while the API is unreachable.
@@ -446,12 +606,16 @@ bool savePendingSettings() {
   //One file per pass: the title first, the interval on the next pass
   bool saveTitle = hasPendingTitle;
   bool saveInterval = hasPendingInterval && !saveTitle;
+  bool saveDetect = hasPendingDetect && !saveTitle && !saveInterval;
   String newTitle = pendingTitle;
   unsigned long newInterval = pendingInterval;
+  DetectLimits newLimits = detectLimits;
   if (saveTitle) {
     hasPendingTitle = false;
   } else if (saveInterval) {
     hasPendingInterval = false;
+  } else if (saveDetect) {
+    hasPendingDetect = false;
   }
   xSemaphoreGive(settingsLock);
   if (saveTitle) {
@@ -459,8 +623,33 @@ bool savePendingSettings() {
   } else if (saveInterval) {
     cycle.setInterval(newInterval);
     writeFile("/interval0.txt", String(newInterval).c_str());
+  } else if (saveDetect) {
+    saveDetectLimits(newLimits);
   }
-  return saveInterval || saveTitle;
+  return saveInterval || saveTitle || saveDetect;
+}
+
+// NVS keys are at most 15 characters, so the keys are shorter than the API's field names
+void saveDetectLimits(const DetectLimits &limits) {
+  Preferences eventPrefs;
+  eventPrefs.begin("events", false);
+  eventPrefs.putFloat("topup_drop", limits.topupMinDrop);
+  eventPrefs.putFloat("feed_rise", limits.feedingMinRise);
+  eventPrefs.putBool("feed_on", limits.feedingEnabled);
+  eventPrefs.end();
+}
+
+//Called at boot only; defaults when nothing was saved
+DetectLimits loadDetectLimits() {
+  DetectLimits limits;
+  Preferences eventPrefs;
+  if (eventPrefs.begin("events", true)) {
+    limits.topupMinDrop = eventPrefs.getFloat("topup_drop", limits.topupMinDrop);
+    limits.feedingMinRise = eventPrefs.getFloat("feed_rise", limits.feedingMinRise);
+    limits.feedingEnabled = eventPrefs.getBool("feed_on", limits.feedingEnabled);
+    eventPrefs.end();
+  }
+  return limits;
 }
 
 String withoutTrailingSlashes(String url) {
@@ -597,6 +786,16 @@ std::string statusText() {
   s.apiLastHttp = apiLastCode;
   s.apiFailures = apiFailures;
   s.apiDelivered = apiDelivered;
+
+  long long epoch = time(nullptr);
+  xSemaphoreTake(eventsLock, portMAX_DELAY);
+  s.eventsCount = events.size();
+  s.eventsUnsynced = events.dirtyCount();
+  s.eventsDropped = events.droppedUnsynced();
+  s.eventsClockAhead = events.futureCount(epoch);
+  xSemaphoreGive(eventsLock);
+  s.eventsRejected = eventsRejected;
+  s.eventsLastHttp = eventsLastHttp;
   return statusJson(s);
 }
 
@@ -651,7 +850,7 @@ void registerApiRoutes() {
 
   server.on("/api/settings", HTTP_GET, [](AsyncWebServerRequest *request) {
     xSemaphoreTake(settingsLock, portMAX_DELAY);
-    std::string json = settingsJson(interval0 / 60000, title.c_str());
+    std::string json = settingsJson(interval0 / 60000, title.c_str(), detectLimits);
     xSemaphoreGive(settingsLock);
     sendJson(request, 200, json);
   });
@@ -659,25 +858,79 @@ void registerApiRoutes() {
   server.on("/api/settings", HTTP_POST, [](AsyncWebServerRequest *request) {
     String interval = formValue(request, "interval");
     String newTitle = formValue(request, "title");
+    String topupMinDrop = formValue(request, "topup_min_drop");
+    String feedingMinRise = formValue(request, "feeding_min_rise");
+    String feedingEnabled = formValue(request, "feeding_enabled");
+    bool hasBasic = interval.length() || newTitle.length();
+    bool hasDetect = topupMinDrop.length() || feedingMinRise.length() || feedingEnabled.length();
     std::string error;
-    if (!validateSettings(interval.c_str(), newTitle.c_str(), error)) {
+    if (!hasBasic && !hasDetect) {
+      sendError(request, 400, "nothing to save");
+      return;
+    }
+    if (hasBasic && !validateSettings(interval.c_str(), newTitle.c_str(), error)) {
       sendError(request, 400, error);
       return;
     }
     //Live values change now so the next GET shows them; loop() persists them
     xSemaphoreTake(settingsLock, portMAX_DELAY);
-    if (interval.length()) {
-      interval0 = interval.toInt() * 60000UL;
-      pendingInterval = interval0;
-      hasPendingInterval = true;
-    }
-    if (newTitle.length()) {
-      title = newTitle;
-      pendingTitle = newTitle;
-      hasPendingTitle = true;
+    DetectLimits limits = detectLimits;
+    bool valid = !hasDetect || applyDetectSettings(topupMinDrop.c_str(), feedingMinRise.c_str(),
+                                                   feedingEnabled.c_str(), limits, error);
+    if (valid) {
+      if (interval.length()) {
+        interval0 = interval.toInt() * 60000UL;
+        pendingInterval = interval0;
+        hasPendingInterval = true;
+      }
+      if (newTitle.length()) {
+        title = newTitle;
+        pendingTitle = newTitle;
+        hasPendingTitle = true;
+      }
+      if (hasDetect) {
+        detectLimits = limits;
+        hasPendingDetect = true;
+      }
     }
     xSemaphoreGive(settingsLock);
+    if (!valid) {
+      sendError(request, 400, error);
+      return;
+    }
     sendOk(request);
+  });
+
+  server.on("/api/events", HTTP_GET, [](AsyncWebServerRequest *request) {
+    xSemaphoreTake(eventsLock, portMAX_DELAY);
+    std::string json = events.listJson();
+    xSemaphoreGive(eventsLock);
+    sendJson(request, 200, json);
+  });
+
+  //Changes RAM only and replies at once; loop() saves and syncs
+  server.on("/api/events", HTTP_POST, [](AsyncWebServerRequest *request) {
+    EventForm form;
+    form.op = formValue(request, "op").c_str();
+    form.seq = formValue(request, "seq").c_str();
+    form.kind = formValue(request, "kind").c_str();
+    form.detail = formValue(request, "detail").c_str();
+    form.occurredAt = formValue(request, "occurred_at").c_str();
+    form.note = formValue(request, "note").c_str();
+    form.status = formValue(request, "status").c_str();
+    form.hasKind = request->hasParam("kind", true);
+    form.hasDetail = request->hasParam("detail", true);
+    form.hasOccurredAt = request->hasParam("occurred_at", true);
+    form.hasNote = request->hasParam("note", true);
+    form.hasStatus = request->hasParam("status", true);
+    long long now = time(nullptr);
+    xSemaphoreTake(eventsLock, portMAX_DELAY);
+    EventApiResult result = applyEventForm(events, form, now);
+    if (result.changed) {
+      eventsSavePending = true;
+    }
+    xSemaphoreGive(eventsLock);
+    sendJson(request, result.httpCode, result.json);
   });
 
   server.on("/api/command", HTTP_POST, [](AsyncWebServerRequest *request) {
@@ -764,6 +1017,10 @@ void registerApiRoutes() {
 
 void restoreAllData() {
   readings.restore(readingStore);
+  //Saved-but-unsynced events come back dirty. Edits not yet saved when the power went are lost.
+  if (!events.loadText(readingStore.read(events.path()))) {
+    Serial.println("No saved events");
+  }
   //settings variables below
   interval0 = readFile("/interval0.txt").toInt();
   title = readFile("/title.txt");
@@ -821,7 +1078,9 @@ void setup() {
   readingsLock = xSemaphoreCreateMutex();
   piCacheLock = xSemaphoreCreateMutex();
   settingsLock = xSemaphoreCreateMutex();
+  eventsLock = xSemaphoreCreateMutex();
   hasDeviceRanges = loadDeviceRanges(deviceRanges);
+  detectLimits = loadDetectLimits();
   Serial.begin(115200);
 
   Serial.println("Starting the LittleFS Webserver..");
@@ -1092,10 +1351,16 @@ void loop() {
   //pH board should be on no longer than it must. A reading's sensors are on for about 35 s.
   CycleStep step = cycle.step();
   bool measuring = step == CycleStep::Warmup || step == CycleStep::Sampling || settleStep != SettleStep::Idle;
-  //At most one slow step per pass: an upload, a settings write or one Pi fetch.
-  //A skipped fetch stays due, so it runs on a later pass.
+  //At most one slow step per pass, in this order: a readings upload, an events save, an event sync,
+  //a settings write or one Pi fetch. A skipped fetch stays due, so it runs on a later pass.
   if (!measuring) {
     bool didSlowWork = sendQueuedReading();
+    if (!didSlowWork) {
+      didSlowWork = saveEvents();
+    }
+    if (!didSlowWork) {
+      didSlowWork = syncNextEvent();
+    }
     if (!didSlowWork) {
       didSlowWork = savePendingSettings();
     }

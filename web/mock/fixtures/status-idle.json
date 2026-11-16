@@ -79,5 +79,13 @@
     "last_http": 201,
     "failures": 0,
     "delivered": 302
+  },
+  "events": {
+    "count": 4,
+    "unsynced": 1,
+    "dropped_unsynced": 0,
+    "clock_ahead": 0,
+    "rejected": 0,
+    "last_sync_http": 200
   }
 }

@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include "event_detect.h"
 #include "json_text.h"
 #include "reading_log.h"
 
@@ -67,6 +68,12 @@ struct StatusView {
   int apiLastHttp = 0;
   unsigned long apiFailures = 0;
   unsigned long apiDelivered = 0;
+  int eventsCount = 0;
+  int eventsUnsynced = 0;
+  unsigned eventsDropped = 0;     //unsynced events lost because the store was full
+  int eventsClockAhead = 0;       //unsynced because their updated_at is over a day ahead
+  unsigned long eventsRejected = 0;
+  int eventsLastHttp = 0;
 };
 
 inline std::string jsonPair(float mean, float std) {
@@ -122,11 +129,20 @@ inline std::string statusJson(const StatusView &s) {
   j += ",\"last_http\":" + std::to_string(s.apiLastHttp);
   j += ",\"failures\":" + std::to_string(s.apiFailures);
   j += ",\"delivered\":" + std::to_string(s.apiDelivered) + "}";
+  j += ",\"events\":{\"count\":" + std::to_string(s.eventsCount);
+  j += ",\"unsynced\":" + std::to_string(s.eventsUnsynced);
+  j += ",\"dropped_unsynced\":" + std::to_string(s.eventsDropped);
+  j += ",\"clock_ahead\":" + std::to_string(s.eventsClockAhead);
+  j += ",\"rejected\":" + std::to_string(s.eventsRejected);
+  j += ",\"last_sync_http\":" + std::to_string(s.eventsLastHttp) + "}";
   return j + "}";
 }
 
-inline std::string settingsJson(int intervalMin, const std::string &title) {
-  return "{\"interval_min\":" + std::to_string(intervalMin) + ",\"title\":" + jsonString(title) + "}";
+inline std::string settingsJson(int intervalMin, const std::string &title, const DetectLimits &limits) {
+  return "{\"interval_min\":" + std::to_string(intervalMin) + ",\"title\":" + jsonString(title) +
+         ",\"topup_min_drop\":" + jsonNumber(limits.topupMinDrop) +
+         ",\"feeding_min_rise\":" + jsonNumber(limits.feedingMinRise) +
+         ",\"feeding_enabled\":" + jsonBool(limits.feedingEnabled) + "}";
 }
 
 //An empty value means "not provided"

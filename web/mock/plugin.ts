@@ -11,6 +11,7 @@ import piNone from './fixtures/pi-none.json';
 import piStale from './fixtures/pi-stale.json';
 import piFault from './fixtures/pi-fault.json';
 import ranges from './fixtures/ranges.json';
+import eventsFixture from './fixtures/events.json';
 
 type Json = unknown;
 // @types/node is not installed, so describe the little of the Node request used here.
@@ -26,7 +27,68 @@ const STATUS: Record<string, Json> = {
   empty: statusEmpty, nopi: statusIdle, stale: statusIdle,
 };
 
-let settings = { interval_min: 10, title: 'Reservoir' };
+let settings = {
+  interval_min: 10, title: 'Reservoir', topup_min_drop: 3, feeding_min_rise: 5, feeding_enabled: false,
+};
+
+// Stateful copy of the events fixture, changed by POST /api/events the way the device does it
+interface MockEvent {
+  seq: number; occurred_at: string; kind: string; detail: string | null; source: string; status: string;
+  ec_before: number | null; ec_after: number | null; ph_before: number | null; ph_after: number | null;
+  note: string; backed_up: boolean; deleted?: boolean;
+}
+const mockEvents: MockEvent[] = JSON.parse(JSON.stringify(eventsFixture.events));
+let nextSeq = 5;
+function eventsReply() {
+  const shown = mockEvents.filter((e) => !e.deleted);
+  shown.sort((a, b) => (b.occurred_at > a.occurred_at ? 1 : b.occurred_at < a.occurred_at ? -1 : b.seq - a.seq));
+  return { events: shown };
+}
+function utcText(iso: string | null): string | null {
+  if (!iso) return new Date().toISOString().slice(0, 19) + 'Z';
+  const t = Date.parse(iso);
+  return Number.isNaN(t) || !/(Z|[+-]\d\d:\d\d)$/.test(iso) ? null : new Date(t).toISOString().slice(0, 19) + 'Z';
+}
+function eventCommand(form: URLSearchParams): [number, unknown] {
+  const op = form.get('op') ?? '';
+  const kind = form.get('kind');
+  const detailFor = (k: string, d: string | null) => (k === 'topup' ? d || 'unknown' : null);
+  if (op === 'create') {
+    if (!kind) return [400, { error: 'kind is required' }];
+    const at = utcText(form.get('occurred_at'));
+    if (!at) return [400, { error: 'bad occurred_at' }];
+    const e: MockEvent = {
+      seq: nextSeq++, occurred_at: at, kind, detail: detailFor(kind, form.get('detail')), source: 'manual',
+      status: 'confirmed', ec_before: null, ec_after: null, ph_before: null, ph_after: null,
+      note: form.get('note') ?? '', backed_up: false,
+    };
+    mockEvents.push(e);
+    return [200, { seq: e.seq }];
+  }
+  const e = mockEvents.find((x) => x.seq === Number(form.get('seq')) && !x.deleted);
+  if (!e) return [404, { error: 'no such event' }];
+  if (op === 'delete') {
+    if (e.source !== 'manual') return [409, { error: 'detected events can be rejected, not deleted' }];
+    e.deleted = true;
+  } else if (op === 'update' || op === 'confirm' || op === 'reject') {
+    if (form.has('occurred_at') && form.get('occurred_at')) {
+      const at = utcText(form.get('occurred_at'));
+      if (!at) return [400, { error: 'bad occurred_at' }];
+      e.occurred_at = at;
+    }
+    if (kind) e.kind = kind;
+    if (form.has('detail') || kind) e.detail = detailFor(e.kind, form.has('detail') ? form.get('detail') : e.detail);
+    if (form.has('note')) e.note = form.get('note') ?? '';
+    if (op === 'confirm') e.status = 'confirmed';
+    else if (op === 'reject') e.status = 'rejected';
+    else if (form.get('status')) e.status = form.get('status') ?? e.status;
+    else if (e.source === 'detected') e.status = 'confirmed';
+  } else {
+    return [400, { error: 'op must be create, update, delete, reject or confirm' }];
+  }
+  e.backed_up = false;
+  return [200, { seq: e.seq }];
+}
 let apiConfig = { url: 'http://192.168.12.230:8000', device: 'envmonitor-1', token_set: true };
 let busyUntil = 0;
 // Small stateful wizard model for the idle scenario: busy for 3 s, then the next state.
@@ -112,6 +174,7 @@ export function mockApi(): Plugin {
             }
             if (path === '/api/ranges') return send(200, ranges);
             if (path === '/api/settings') return send(200, settings);
+            if (path === '/api/events') return send(200, scenario === 'empty' ? { events: [] } : eventsReply());
             if (path === '/api/apiconfig') return send(200, apiConfig);
             return send(404, { error: 'not found' });
           }
@@ -130,7 +193,14 @@ export function mockApi(): Plugin {
             if (path === '/api/settings') {
               if (form.has('interval')) settings.interval_min = Number(form.get('interval'));
               if (form.has('title')) settings.title = form.get('title') ?? '';
+              if (form.get('topup_min_drop')) settings.topup_min_drop = Number(form.get('topup_min_drop'));
+              if (form.get('feeding_min_rise')) settings.feeding_min_rise = Number(form.get('feeding_min_rise'));
+              if (form.get('feeding_enabled')) settings.feeding_enabled = form.get('feeding_enabled') === 'true';
               return send(200, { ok: true });
+            }
+            if (path === '/api/events') {
+              const [code, body] = eventCommand(form);
+              return send(code, body);
             }
             if (path === '/api/apiconfig') {
               apiConfig = {
