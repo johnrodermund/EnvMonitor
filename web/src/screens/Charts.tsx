@@ -1,5 +1,6 @@
 import { useContext, useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { getRanges, getReadings } from '../api';
+import { getEvents, getRanges, getReadings } from '../api';
+import { EventsTable } from '../components/EventsTable';
 import { MetricChart } from '../components/MetricChart';
 import { toCsv } from '../logic/csv';
 import { BUILTIN_RANGES } from '../logic/status';
@@ -26,6 +27,7 @@ export function Charts() {
   const { data: status } = useContext(StatusContext);
   const readings = usePoll(getReadings, 600000);
   const rangesPoll = usePoll(getRanges, 60000);
+  const eventsPoll = usePoll(getEvents, 60000);
   const [hours, setHours] = useState<number | null>(24);
 
   const count = status?.count ?? null;
@@ -47,6 +49,11 @@ export function Charts() {
   const ph = useMemo(() => column(rows, 1), [rows]);
   const ec = useMemo(() => column(rows, 2), [rows]);
   const wt = useMemo(() => column(rows, 3), [rows]);
+  // Rejected events are kept in the table but not marked on the charts
+  const markers = useMemo(() => (eventsPoll.data?.events ?? []).filter((e) => e.status !== 'rejected'), [eventsPoll.data]);
+  const eventsTable = (
+    <EventsTable events={eventsPoll.data?.events ?? null} error={eventsPoll.error?.message ?? null} onChanged={eventsPoll.refresh} />
+  );
 
   const download = () => {
     const blob = new Blob([toCsv(all ?? [])], { type: 'text/csv' });
@@ -65,6 +72,7 @@ export function Charts() {
       <div>
         <h1>Charts</h1>
         <p class="muted">{readings.error ? 'Could not load readings' : 'Loading…'}</p>
+        {eventsTable}
       </div>
     );
   }
@@ -85,14 +93,18 @@ export function Charts() {
             <button onClick={download}>Download CSV</button>
           </div>
           {!rangesPoll.data && rangesPoll.error && <p class="warn-text small">Using built-in ranges (device ranges unavailable)</p>}
-          <p class="muted small">Shaded band is the target range; dots outside it are marked. Drag to zoom, double-click to reset.</p>
+          <p class="muted small">
+            Shaded band is the target range; dots outside it are marked. Vertical lines are events (dashed: not yet reviewed). Drag to zoom,
+            double-click to reset.
+          </p>
           <div class="chart-wrap" key={String(hours)}>
-            <MetricChart title="pH" unit="" digits={2} times={times} values={ph} target={ranges.ph.target} />
-            <MetricChart title="EC" unit="µS/cm" digits={0} times={times} values={ec} target={ranges.ec.target} />
+            <MetricChart title="pH" unit="" digits={2} times={times} values={ph} target={ranges.ph.target} events={markers} />
+            <MetricChart title="EC" unit="µS/cm" digits={0} times={times} values={ec} target={ranges.ec.target} events={markers} />
             <MetricChart title="Temp" unit="°F" digits={1} times={times} values={wt} target={ranges.temp.target} />
           </div>
         </>
       )}
+      {eventsTable}
     </div>
   );
 }

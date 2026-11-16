@@ -79,6 +79,7 @@ export interface EventChange {
   detail?: EventDetail | '';
   occurred_at?: string;
   note?: string;
+  status?: EventStatus;
 }
 
 export interface DeviceSettings {
