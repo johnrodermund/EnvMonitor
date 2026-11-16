@@ -35,6 +35,64 @@ export interface StatusJson {
   calibration: { seq: Num; ph4_adc: Num; ph7_adc: Num };
   diag: { last_ph_adc: Num; ph_samples: Num[]; last_ec_adc: Num; last_warmup_ms?: Num };
   api: { queued: Num; last_http: Num; failures: Num; delivered: Num };
+  events?: EventsStatus;
+}
+
+export interface EventsStatus {
+  count: Num;
+  unsynced: Num;
+  dropped_unsynced: Num;
+  clock_ahead: Num;
+  /** Events whose current version the Pi refused (400/422) */
+  refused: Num;
+  last_sync_http: Num;
+}
+
+export type EventKind = 'topup' | 'feeding' | 'buffer' | 'water_change' | 'other';
+export type EventDetail = 'di' | 'tap' | 'unknown';
+export type EventStatus = 'suggested' | 'confirmed' | 'rejected';
+
+/** One tank event as GET /api/events returns it. occurred_at is UTC ISO. */
+export interface TankEvent {
+  seq: number;
+  occurred_at: string;
+  kind: EventKind;
+  detail: EventDetail | null;
+  source: 'detected' | 'manual';
+  status: EventStatus;
+  ec_before: Num;
+  ec_after: Num;
+  ph_before: Num;
+  ph_after: Num;
+  note: string;
+  backed_up: boolean;
+  /** The Pi refused this version; editing it tries again. */
+  refused: boolean;
+}
+
+export interface EventsResponse {
+  events: TankEvent[];
+  /** The device left out its oldest events to keep the reply small */
+  truncated?: boolean;
+}
+
+/** POST /api/events fields. occurred_at is ISO with an offset. A field left out stays unchanged. */
+export interface EventChange {
+  op: 'create' | 'update' | 'delete' | 'reject' | 'confirm';
+  seq?: number;
+  kind?: EventKind;
+  detail?: EventDetail | '';
+  occurred_at?: string;
+  note?: string;
+  status?: EventStatus;
+}
+
+export interface DeviceSettings {
+  interval_min: number;
+  title: string;
+  topup_min_drop?: number;
+  feeding_min_rise?: number;
+  feeding_enabled?: boolean;
 }
 
 /** [time, ph, ec, water temp F], oldest first. */

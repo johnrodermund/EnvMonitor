@@ -8,10 +8,10 @@
 
 enum class PiEndpoint { Stats = 0, Report = 1, Thresholds = 2 };
 
-inline std::string piPath(PiEndpoint e, const std::string &device) {
-  if (e == PiEndpoint::Thresholds) return "/thresholds";
+//Percent-encodes everything but RFC 3986 unreserved characters
+inline std::string urlEncode(const std::string &text) {
   std::string encoded;
-  for (char c : device) {
+  for (char c : text) {
     bool plain = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
                  c == '-' || c == '_' || c == '.' || c == '~';
     if (plain) {
@@ -22,8 +22,13 @@ inline std::string piPath(PiEndpoint e, const std::string &device) {
       encoded += escape;
     }
   }
-  if (e == PiEndpoint::Stats) return "/stats?window=24h&device=" + encoded;
-  return "/reports/latest?device=" + encoded;
+  return encoded;
+}
+
+inline std::string piPath(PiEndpoint e, const std::string &device) {
+  if (e == PiEndpoint::Thresholds) return "/thresholds";
+  if (e == PiEndpoint::Stats) return "/stats?window=24h&device=" + urlEncode(device);
+  return "/reports/latest?device=" + urlEncode(device);
 }
 
 class PiCache {

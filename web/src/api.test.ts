@@ -1,9 +1,20 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, command, getStatus } from './api';
+import { ApiError, command, getStatus, postEvent } from './api';
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe('api', () => {
+  it('posts an event change as form data and returns its seq', async () => {
+    const f = vi.fn().mockResolvedValue(new Response('{"seq":7}', { status: 200 }));
+    vi.stubGlobal('fetch', f);
+    const seq = await postEvent({ op: 'create', kind: 'other', note: 'a | "b"' });
+    const [url, init] = f.mock.calls[0];
+    expect(url).toBe('/api/events');
+    expect(init.method).toBe('POST');
+    expect(String(init.body)).toBe('op=create&kind=other&note=a+%7C+%22b%22');
+    expect(seq).toBe(7);
+  });
+
   it('posts a command as form data', async () => {
     const f = vi.fn().mockResolvedValue(new Response('{"ok":true}', { status: 202 }));
     vi.stubGlobal('fetch', f);

@@ -42,6 +42,9 @@ export function Settings() {
   const [done, setDone] = useState<Record<string, string | null>>({});
   const [resetOpen, setResetOpen] = useState(false);
   const [typed, setTyped] = useState('');
+  const [topupDrop, setTopupDrop] = useState('');
+  const [feedingRise, setFeedingRise] = useState('');
+  const [feedingOn, setFeedingOn] = useState(false);
 
   const note = (k: string, err: string | null, ok?: string) => {
     setErrs((p) => ({ ...p, [k]: err }));
@@ -73,6 +76,9 @@ export function Settings() {
       (s) => {
         setIntervalText(String(s.interval_min));
         setTitle(s.title);
+        if (s.topup_min_drop !== undefined) setTopupDrop(String(s.topup_min_drop));
+        if (s.feeding_min_rise !== undefined) setFeedingRise(String(s.feeding_min_rise));
+        setFeedingOn(!!s.feeding_enabled);
       },
       () => {},
     );
@@ -104,6 +110,13 @@ export function Settings() {
       await saveSettings({ title });
       refresh();
     });
+  };
+  const saveDetection = () => {
+    const drop = Number(topupDrop);
+    const rise = Number(feedingRise);
+    const ok = (v: number, t: string) => t.trim() !== '' && Number.isFinite(v) && v >= 0.5 && v <= 100;
+    if (!ok(drop, topupDrop) || !ok(rise, feedingRise)) return note('detect', 'Enter numbers from 0.5 to 100');
+    return run('detect', () => saveSettings({ topup_min_drop: drop, feeding_min_rise: rise, feeding_enabled: feedingOn }));
   };
   const saveDeviceRanges = () => {
     const parsed = parseRangesForm(rText);
@@ -184,6 +197,29 @@ export function Settings() {
           </button>
         </div>
         {field('title')}
+      </section>
+
+      <section class="panel">
+        <h2>Event detection</h2>
+        <p class="muted small">A top-up is a drop in median EC between the 6 readings before and the 6 after.</p>
+        <label>
+          Top-up: smallest EC drop (µS/cm)
+          <input type="text" inputMode="decimal" value={topupDrop} onInput={(e) => setTopupDrop(val(e))} />
+        </label>
+        <label>
+          Feeding: smallest EC rise (µS/cm)
+          <input type="text" inputMode="decimal" value={feedingRise} onInput={(e) => setFeedingRise(val(e))} />
+        </label>
+        <label class="check">
+          <input type="checkbox" checked={feedingOn} onChange={(e) => setFeedingOn((e.target as HTMLInputElement).checked)} />
+          Detect feedings
+        </label>
+        <div class="actions">
+          <button class="primary" onClick={saveDetection}>
+            Save
+          </button>
+        </div>
+        {field('detect')}
       </section>
 
       <section class="panel">

@@ -1,7 +1,9 @@
 import uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
 import { useEffect, useRef } from 'preact/hooks';
+import { eventSeconds, markerStyle } from '../logic/events';
 import { isZoomed, nextDataMode } from '../logic/window';
+import type { TankEvent } from '../types';
 
 export interface MetricChartProps {
   title: string;
@@ -10,6 +12,8 @@ export interface MetricChartProps {
   times: number[];
   values: (number | null)[];
   target: [number, number];
+  /** Drawn as vertical markers; suggested ones dashed. Never changes the scales. */
+  events?: TankEvent[];
 }
 
 const HEIGHT = 190;
@@ -22,7 +26,41 @@ function outsideOf(values: (number | null)[], [lo, hi]: [number, number]): (numb
   return values.map((v) => (v !== null && (v < lo || v > hi) ? v : null));
 }
 
-function build(el: HTMLElement, p: MetricChartProps, width: number, zoomed: { current: boolean }): uPlot {
+function drawEvents(u: uPlot, events: TankEvent[] | undefined) {
+  if (!events?.length) return;
+  const { ctx } = u;
+  const min = u.scales.x.min ?? -Infinity;
+  const max = u.scales.x.max ?? Infinity;
+  const top = u.bbox.top;
+  const bottom = u.bbox.top + u.bbox.height;
+  const dpr = devicePixelRatio || 1;
+  ctx.save();
+  ctx.lineWidth = 2 * dpr;
+  for (const e of events) {
+    const t = eventSeconds(e);
+    if (t === null || t < min || t > max) continue;
+    const x = Math.round(u.valToPos(t, 'x', true));
+    const style = markerStyle(e);
+    ctx.strokeStyle = css(style.color);
+    ctx.fillStyle = ctx.strokeStyle;
+    ctx.setLineDash(style.dashed ? [5 * dpr, 4 * dpr] : []);
+    ctx.beginPath();
+    ctx.moveTo(x, top);
+    ctx.lineTo(x, bottom);
+    ctx.stroke();
+    // A small flag at the top so a marker is visible over the line
+    ctx.beginPath();
+    ctx.moveTo(x - 4 * dpr, top);
+    ctx.lineTo(x + 4 * dpr, top);
+    ctx.lineTo(x, top + 6 * dpr);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function build(el: HTMLElement, latest: { current: MetricChartProps }, width: number, zoomed: { current: boolean }): uPlot {
+  const p = latest.current;
   const text = css('--muted');
   const grid = css('--border');
   const accent = css('--accent');
@@ -74,6 +112,7 @@ function build(el: HTMLElement, p: MetricChartProps, width: number, zoomed: { cu
           (rows[2] as HTMLElement | undefined)?.style.setProperty('display', 'none');
         },
       ],
+      draw: [(u) => drawEvents(u, latest.current.events)],
       drawClear: [
         (u) => {
           const { ctx } = u;
@@ -105,7 +144,7 @@ export function MetricChart(props: MetricChartProps) {
     if (!el) return;
     const make = () => {
       chart.current?.destroy();
-      chart.current = build(el, latest.current, el.clientWidth || 300, zoomed);
+      chart.current = build(el, latest, el.clientWidth || 300, zoomed);
     };
     make();
     const mq = window.matchMedia('(prefers-color-scheme: dark)');
@@ -129,6 +168,10 @@ export function MetricChart(props: MetricChartProps) {
     u.setData([props.times, props.values, outsideOf(props.values, props.target)], mode.resetScales);
     if (mode.redraw) u.redraw();
   }, [props.times, props.values]);
+
+  useEffect(() => {
+    chart.current?.redraw(false, false);
+  }, [props.events]);
 
   // The padding lives on the outer box so the host's width is the drawable width.
   return (

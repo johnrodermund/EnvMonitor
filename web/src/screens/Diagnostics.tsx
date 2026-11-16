@@ -108,6 +108,22 @@ export function Diagnostics() {
           <strong>{uptime(s.uptime_s)}</strong>
         </p>
       </section>
+      {s.events && (
+        <section class="panel">
+          <h2>Events</h2>
+          <p>
+            Stored: <strong>{raw(s.events.count)}</strong> · Not backed up: <strong>{raw(s.events.unsynced)}</strong> · Last sync HTTP:{' '}
+            <strong>{s.events.last_sync_http || 'none'}</strong>
+          </p>
+          <p class="small">
+            Lost before backup (store full): <strong>{raw(s.events.dropped_unsynced)}</strong> · Refused by the Pi:{' '}
+            <strong>{raw(s.events.refused)}</strong>
+          </p>
+          {(s.events.clock_ahead ?? 0) > 0 && (
+            <p class="warn-text small">{s.events.clock_ahead} event(s) carry a time over a day ahead and won't sync until the clock catches up.</p>
+          )}
+        </section>
+      )}
       <section class="panel">
         <h2>Pi cache</h2>
         {pi.data ? (
