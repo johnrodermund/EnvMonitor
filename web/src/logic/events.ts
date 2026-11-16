@@ -47,6 +47,19 @@ export function markerStyle(e: TankEvent): { color: string; dashed: boolean } {
   return { color, dashed: e.status === 'suggested' };
 }
 
+export type RowAction = 'confirm_di' | 'confirm_tap' | 'confirm' | 'reject' | 'delete' | 'edit';
+
+/** Buttons for one event row. Any detected event can be rejected until it is; only manual events can be deleted. */
+export function rowActions(e: TankEvent): RowAction[] {
+  const out: RowAction[] = [];
+  if (e.status === 'suggested') out.push(...(e.kind === 'topup' ? (['confirm_di', 'confirm_tap'] as const) : (['confirm'] as const)));
+  if (e.status === 'rejected') out.push('confirm');
+  if (e.source === 'detected' && e.status !== 'rejected') out.push('reject');
+  if (e.source === 'manual') out.push('delete');
+  out.push('edit');
+  return out;
+}
+
 const pad = (n: number) => String(n).padStart(2, '0');
 
 /** An ISO time as the "YYYY-MM-DDTHH:MM" a datetime-local input shows, in the browser's zone. */

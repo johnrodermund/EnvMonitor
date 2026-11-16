@@ -35,14 +35,14 @@ let settings = {
 interface MockEvent {
   seq: number; occurred_at: string; kind: string; detail: string | null; source: string; status: string;
   ec_before: number | null; ec_after: number | null; ph_before: number | null; ph_after: number | null;
-  note: string; backed_up: boolean; deleted?: boolean;
+  note: string; backed_up: boolean; refused: boolean; deleted?: boolean;
 }
 const mockEvents: MockEvent[] = JSON.parse(JSON.stringify(eventsFixture.events));
 let nextSeq = 5;
 function eventsReply() {
   const shown = mockEvents.filter((e) => !e.deleted);
   shown.sort((a, b) => (b.occurred_at > a.occurred_at ? 1 : b.occurred_at < a.occurred_at ? -1 : b.seq - a.seq));
-  return { events: shown };
+  return { events: shown, truncated: false };
 }
 function utcText(iso: string | null): string | null {
   if (!iso) return new Date().toISOString().slice(0, 19) + 'Z';
@@ -60,7 +60,7 @@ function eventCommand(form: URLSearchParams): [number, unknown] {
     const e: MockEvent = {
       seq: nextSeq++, occurred_at: at, kind, detail: detailFor(kind, form.get('detail')), source: 'manual',
       status: 'confirmed', ec_before: null, ec_after: null, ph_before: null, ph_after: null,
-      note: form.get('note') ?? '', backed_up: false,
+      note: form.get('note') ?? '', backed_up: false, refused: false,
     };
     mockEvents.push(e);
     return [200, { seq: e.seq }];
@@ -87,6 +87,7 @@ function eventCommand(form: URLSearchParams): [number, unknown] {
     return [400, { error: 'op must be create, update, delete, reject or confirm' }];
   }
   e.backed_up = false;
+  e.refused = false;
   return [200, { seq: e.seq }];
 }
 let apiConfig = { url: 'http://192.168.12.230:8000', device: 'envmonitor-1', token_set: true };

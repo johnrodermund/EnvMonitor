@@ -43,7 +43,8 @@ export interface EventsStatus {
   unsynced: Num;
   dropped_unsynced: Num;
   clock_ahead: Num;
-  rejected: Num;
+  /** Events whose current version the Pi refused (400/422) */
+  refused: Num;
   last_sync_http: Num;
 }
 
@@ -65,10 +66,14 @@ export interface TankEvent {
   ph_after: Num;
   note: string;
   backed_up: boolean;
+  /** The Pi refused this version; editing it tries again. */
+  refused: boolean;
 }
 
 export interface EventsResponse {
   events: TankEvent[];
+  /** The device left out its oldest events to keep the reply small */
+  truncated?: boolean;
 }
 
 /** POST /api/events fields. occurred_at is ISO with an offset. A field left out stays unchanged. */

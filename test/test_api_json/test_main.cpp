@@ -73,11 +73,11 @@ void status_json_reports_events(void) {
   s.eventsUnsynced = 3;
   s.eventsDropped = 1;
   s.eventsClockAhead = 2;
-  s.eventsRejected = 4;
+  s.eventsRefused = 4;
   s.eventsLastHttp = 201;
   TEST_ASSERT_NOT_EQUAL(std::string::npos,
                         statusJson(s).find("\"events\":{\"count\":12,\"unsynced\":3,\"dropped_unsynced\":1,"
-                                           "\"clock_ahead\":2,\"rejected\":4,\"last_sync_http\":201}}"));
+                                           "\"clock_ahead\":2,\"refused\":4,\"last_sync_http\":201}}"));
 }
 
 void validate_settings_rules(void) {

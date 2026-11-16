@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { eventDelta, eventLabel, eventSeconds, eventsInWindow, markerStyle, toLocalInput, fromLocalInput } from './events';
+import { eventDelta, eventLabel, eventSeconds, eventsInWindow, markerStyle, rowActions, toLocalInput, fromLocalInput } from './events';
 import type { TankEvent } from '../types';
 
 function ev(p: Partial<TankEvent>): TankEvent {
@@ -16,6 +16,7 @@ function ev(p: Partial<TankEvent>): TankEvent {
     ph_after: 6.62,
     note: '',
     backed_up: true,
+    refused: false,
     ...p,
   };
 }
@@ -69,5 +70,13 @@ describe('events logic', () => {
     expect(Date.parse(iso as string)).toBe(new Date(2026, 10, 5, 14, 3).getTime());
     expect(fromLocalInput('')).toBeNull();
     expect(toLocalInput(new Date(2026, 10, 5, 14, 3, 59).toISOString())).toBe('2026-11-05T14:03');
+  });
+
+  it('offers reject on every detected event that is not rejected, delete only on manual ones', () => {
+    expect(rowActions(ev({ status: 'suggested' }))).toEqual(['confirm_di', 'confirm_tap', 'reject', 'edit']);
+    expect(rowActions(ev({ kind: 'feeding', detail: null, status: 'suggested' }))).toEqual(['confirm', 'reject', 'edit']);
+    expect(rowActions(ev({ status: 'confirmed' }))).toEqual(['reject', 'edit']);
+    expect(rowActions(ev({ status: 'rejected' }))).toEqual(['confirm', 'edit']);
+    expect(rowActions(ev({ source: 'manual', status: 'confirmed' }))).toEqual(['delete', 'edit']);
   });
 });

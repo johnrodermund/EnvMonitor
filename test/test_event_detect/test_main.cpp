@@ -98,8 +98,60 @@ void test_parses_log_timestamp() {
   TEST_ASSERT_FALSE(parseLogTimestamp("2026,11-1,05", t));
 }
 
+Candidate cand(long long at, float size, float meanSize = 0) {
+  Candidate c;
+  c.found = true;
+  c.topup = true;
+  c.occurredAt = at;
+  c.size = size;
+  c.meanSize = meanSize ? meanSize : size;
+  return c;
+}
+
+//A step yields candidates over several windows; the hold offers only the strongest, once
+void test_hold_offers_the_strongest_after_three_quiet_windows() {
+  CandidateHold hold;
+  Candidate none;
+  long long t = 1800000000LL;
+  TEST_ASSERT_FALSE(hold.push(cand(t, 4)).found);
+  TEST_ASSERT_FALSE(hold.push(cand(t + 600, 6, 5)).found);  //stronger: held instead, count restarts
+  TEST_ASSERT_FALSE(hold.push(cand(t + 1200, 6, 4)).found);  //exact tie, smaller mean: 1
+  TEST_ASSERT_FALSE(hold.push(none).found);                  //2
+  Candidate out = hold.push(none);                           //3
+  TEST_ASSERT_TRUE(out.found);
+  TEST_ASSERT_EQUAL_INT64(t + 600, out.occurredAt);
+  TEST_ASSERT_FALSE(hold.push(none).found);  //nothing held any more
+}
+
+void test_hold_releases_at_once_for_a_far_candidate() {
+  CandidateHold hold;
+  long long t = 1800000000LL;
+  hold.push(cand(t, 4));
+  Candidate out = hold.push(cand(t + 7201, 3.5f));
+  TEST_ASSERT_TRUE(out.found);
+  TEST_ASSERT_EQUAL_INT64(t, out.occurredAt);
+  Candidate none;
+  hold.push(none);
+  hold.push(none);
+  TEST_ASSERT_EQUAL_INT64(t + 7201, hold.push(none).occurredAt);
+}
+
+void test_hold_keeps_kinds_apart() {
+  CandidateHold hold;
+  long long t = 1800000000LL;
+  hold.push(cand(t, 4));
+  Candidate feeding = cand(t + 600, 9);
+  feeding.topup = false;
+  Candidate out = hold.push(feeding);  //a feeding doesn't replace the held top-up; it's released
+  TEST_ASSERT_TRUE(out.found);
+  TEST_ASSERT_TRUE(out.topup);
+}
+
 int main() {
   UNITY_BEGIN();
+  RUN_TEST(test_hold_offers_the_strongest_after_three_quiet_windows);
+  RUN_TEST(test_hold_releases_at_once_for_a_far_candidate);
+  RUN_TEST(test_hold_keeps_kinds_apart);
   RUN_TEST(test_step_down_is_topup_at_seventh_sample);
   RUN_TEST(test_noise_below_threshold_not_found);
   RUN_TEST(test_rise_ignored_when_feeding_disabled);

@@ -52,7 +52,12 @@ export function Charts() {
   // Rejected events are kept in the table but not marked on the charts
   const markers = useMemo(() => (eventsPoll.data?.events ?? []).filter((e) => e.status !== 'rejected'), [eventsPoll.data]);
   const eventsTable = (
-    <EventsTable events={eventsPoll.data?.events ?? null} error={eventsPoll.error?.message ?? null} onChanged={eventsPoll.refresh} />
+    <EventsTable
+      events={eventsPoll.data?.events ?? null}
+      truncated={eventsPoll.data?.truncated}
+      error={eventsPoll.error?.message ?? null}
+      onChanged={eventsPoll.refresh}
+    />
   );
 
   const download = () => {

@@ -117,7 +117,7 @@ export function Diagnostics() {
           </p>
           <p class="small">
             Lost before backup (store full): <strong>{raw(s.events.dropped_unsynced)}</strong> · Refused by the Pi:{' '}
-            <strong>{raw(s.events.rejected)}</strong>
+            <strong>{raw(s.events.refused)}</strong>
           </p>
           {(s.events.clock_ahead ?? 0) > 0 && (
             <p class="warn-text small">{s.events.clock_ahead} event(s) carry a time over a day ahead and won't sync until the clock catches up.</p>

@@ -85,7 +85,7 @@
     "unsynced": 1,
     "dropped_unsynced": 0,
     "clock_ahead": 0,
-    "rejected": 0,
+    "refused": 0,
     "last_sync_http": 200
   }
 }

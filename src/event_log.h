@@ -24,6 +24,7 @@ struct TankEvent {
   float size = 0, meanSize = 0;  //detection strength, compared when a stronger candidate comes along
   bool edited = false;           //the owner changed it, so the detector never replaces it
   bool deleted = false;          //a tombstone, kept until its delete has synced
+  bool refused = false;          //the Pi answered 400/422 to this version: not resent, not backed up
   unsigned dirtyGen = 0;         //counts changes
   unsigned syncedGen = 0;        //dirtyGen as of the last delivered sync
 
@@ -103,15 +104,18 @@ public:
     int nearest = -1;
     for (int i = 0; i < count; i++) {
       const TankEvent &e = items[i];
-      if (e.deleted || e.kind != kind) {
+      if (e.deleted) {
         continue;
       }
-      bool near = llabs(c.occurredAt - e.occurredAt) <= EVENT_NEAR_S ||
-                  (e.originAt != 0 && llabs(c.occurredAt - e.originAt) <= EVENT_NEAR_S);
+      bool sameKind = e.kind == kind;
+      bool nearOrigin = e.originAt != 0 && llabs(c.occurredAt - e.originAt) <= EVENT_NEAR_S;
+      //A detected event blocks its own step whatever the owner relabelled it to
+      bool near = (sameKind && (llabs(c.occurredAt - e.occurredAt) <= EVENT_NEAR_S || nearOrigin)) ||
+                  (e.source == "detected" && nearOrigin);
       if (!near) {
         continue;
       }
-      if (!replaceable(e) || !stronger(c, e)) {
+      if (!sameKind || !replaceable(e) || !stronger(c, e)) {
         return false;  //the owner's event, a rejection or a stronger suggestion already covers it
       }
       if (nearest < 0 || llabs(c.occurredAt - e.occurredAt) < llabs(c.occurredAt - items[nearest].occurredAt)) {
@@ -269,6 +273,43 @@ public:
     }
   }
 
+  //The Pi refused this version (400/422): stop resending it, but don't show it as backed up.
+  //A change since gen keeps it dirty; a refused tombstone is dropped, as there's nothing left to show.
+  void markRefused(unsigned long seq, unsigned gen) {
+    int i = indexOf(seq);
+    if (i < 0) {
+      return;
+    }
+    items[i].syncedGen = gen;
+    if (items[i].dirty()) {
+      return;
+    }
+    if (items[i].deleted) {
+      removeAt(i);
+    } else {
+      items[i].refused = true;
+    }
+  }
+
+  int refusedCount() const {
+    int refused = 0;
+    for (int i = 0; i < count; i++) {
+      refused += items[i].refused;
+    }
+    return refused;
+  }
+
+  //seq the next event gets. The sketch keeps a copy in NVS so a lost /events.txt never reuses one.
+  unsigned long nextSeqValue() const {
+    return nextSeq;
+  }
+
+  void raiseNextSeq(unsigned long seq) {
+    if (seq > nextSeq) {
+      nextSeq = seq;
+    }
+  }
+
   int dirtyCount() const {
     int dirty = 0;
     for (int i = 0; i < count; i++) {
@@ -288,6 +329,7 @@ public:
   //"events v1 <nextSeq>", then one line per event with the note last, escaped so it holds no space or newline
   std::string saveText() const {
     std::string text = "events v1 " + std::to_string(nextSeq) + "\n";
+    text.reserve(count * 160 + 32);  //one allocation: the C3 has little heap and growth doubles it
     char line[256];
     for (int i = 0; i < count; i++) {
       const TankEvent &e = items[i];
@@ -299,6 +341,7 @@ public:
       text += e.edited ? " 1" : " 0";
       text += e.deleted ? " 1" : " 0";
       text += e.dirty() ? " 1" : " 0";
+      text += e.refused ? " 1" : " 0";
       text += " =" + escapeNote(e.note) + "\n";
     }
     return text;
@@ -331,8 +374,10 @@ public:
     return true;
   }
 
-  //{"events":[...]} newest first, without tombstones. backed_up is false while an event is dirty.
-  std::string listJson() const {
+  //{"events":[...],"truncated":bool} newest first, without tombstones, at most maxBytes long: the web
+  //server copies the reply once more, and a failed allocation on the C3 reboots it. backed_up is false
+  //while an event is dirty or the Pi refused it.
+  std::string listJson(size_t maxBytes = 32768) const {
     int order[capacity];
     int shown = 0;
     for (int i = 0; i < count; i++) {
@@ -350,21 +395,29 @@ public:
       }
       order[j + 1] = value;
     }
+    const std::string tail = "],\"truncated\":false}";
     std::string json = "{\"events\":[";
+    size_t estimate = 64 + (size_t)shown * 300;
+    json.reserve(estimate < maxBytes ? estimate : maxBytes);
+    bool truncated = false;
     for (int k = 0; k < shown; k++) {
       const TankEvent &e = items[order[k]];
-      if (k) {
-        json += ",";
-      }
-      json += "{\"seq\":" + std::to_string(e.seq) + ",\"occurred_at\":\"" + utcIso(e.occurredAt) +
+      std::string item = k ? "," : "";
+      item += "{\"seq\":" + std::to_string(e.seq) + ",\"occurred_at\":\"" + utcIso(e.occurredAt) +
               "\",\"kind\":" + jsonString(e.kind) +
               ",\"detail\":" + (e.detail.empty() ? std::string("null") : jsonString(e.detail)) +
               ",\"source\":" + jsonString(e.source) + ",\"status\":" + jsonString(e.status) +
               ",\"ec_before\":" + jsonNumber(e.ecBefore) + ",\"ec_after\":" + jsonNumber(e.ecAfter) +
               ",\"ph_before\":" + jsonNumber(e.phBefore) + ",\"ph_after\":" + jsonNumber(e.phAfter) +
-              ",\"note\":" + jsonString(e.note) + ",\"backed_up\":" + jsonBool(!e.dirty()) + "}";
+              ",\"note\":" + jsonString(e.note) + ",\"backed_up\":" + jsonBool(!e.dirty() && !e.refused) +
+              ",\"refused\":" + jsonBool(e.refused) + "}";
+      if (json.size() + item.size() + tail.size() + 1 > maxBytes) {
+        truncated = true;  //the oldest events are left out
+        break;
+      }
+      json += item;
     }
-    return json + "]}";
+    return json + (truncated ? "],\"truncated\":true}" : tail);
   }
 
 private:
@@ -389,7 +442,10 @@ private:
 
   //Larger median change wins; an exact tie goes to the larger mean change
   static bool stronger(const Candidate &c, const TankEvent &e) {
-    return c.size > e.size || (c.size == e.size && c.meanSize > e.meanSize);
+    Candidate held;
+    held.size = e.size;
+    held.meanSize = e.meanSize;
+    return candidateStronger(c, held);
   }
 
   static bool newer(const TankEvent &a, const TankEvent &b) {
@@ -408,6 +464,7 @@ private:
       e.updatedAt = now;  //never backwards: the Pi keeps the newest updated_at
     }
     e.dirtyGen++;
+    e.refused = false;  //a new version gets a new try
   }
 
   //A fresh event in a free slot. When full, the oldest synced event goes first; only when every
@@ -502,7 +559,7 @@ private:
   }
 
   static bool parseLine(const std::string &line, TankEvent &e) {
-    const int fieldCount = 18;
+    const int fieldCount = 19;
     std::string tokens[fieldCount];
     size_t start = 0;
     for (int f = 0; f < fieldCount; f++) {
@@ -540,10 +597,11 @@ private:
     e.deleted = tokens[15] == "1";
     e.dirtyGen = tokens[16] == "1" ? 1 : 0;
     e.syncedGen = 0;
-    if (tokens[17].empty() || tokens[17][0] != '=') {
+    e.refused = tokens[17] == "1";
+    if (tokens[18].empty() || tokens[18][0] != '=') {
       return false;
     }
-    e.note = unescapeNote(tokens[17].substr(1));
+    e.note = unescapeNote(tokens[18].substr(1));
     return true;
   }
 };

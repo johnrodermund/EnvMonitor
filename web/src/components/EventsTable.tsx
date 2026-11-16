@@ -1,6 +1,6 @@
 import { useState } from 'preact/hooks';
 import { ApiError, postEvent } from '../api';
-import { EVENT_KINDS, eventDelta, eventLabel, fromLocalInput, kindLabel, markerStyle, toLocalInput } from '../logic/events';
+import { EVENT_KINDS, eventDelta, eventLabel, fromLocalInput, kindLabel, markerStyle, rowActions, toLocalInput } from '../logic/events';
 import { fmt, reportLocalTime } from '../logic/format';
 import type { EventChange, EventDetail, EventKind, TankEvent } from '../types';
 
@@ -105,7 +105,17 @@ function EventDialog({ original, onClose, onSaved }: { original?: TankEvent; onC
 }
 
 /** Events newest first, with Confirm/Reject for suggestions, Delete for manual events and Edit for all. */
-export function EventsTable({ events, error, onChanged }: { events: TankEvent[] | null; error: string | null; onChanged: () => void }) {
+export function EventsTable({
+  events,
+  truncated,
+  error,
+  onChanged,
+}: {
+  events: TankEvent[] | null;
+  truncated?: boolean;
+  error: string | null;
+  onChanged: () => void;
+}) {
   const [editing, setEditing] = useState<TankEvent | null>(null);
   const [logging, setLogging] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -149,7 +159,11 @@ export function EventsTable({ events, error, onChanged }: { events: TankEvent[] 
                 <strong>{eventLabel(e)}</strong>
                 <span class="muted">{reportLocalTime(e.occurred_at)}</span>
                 <span class={`badge ev-${e.status}`}>{e.status}</span>
-                {!e.backed_up && <span class="warn-text small">not backed up</span>}
+                {e.refused ? (
+                  <span class="err small">refused by the Pi</span>
+                ) : (
+                  !e.backed_up && <span class="warn-text small">not backed up</span>
+                )}
               </div>
               <div class="event-line small muted">
                 <span>ΔEC {signed(eventDelta(e, 'ec'), 1)}</span>
@@ -158,26 +172,29 @@ export function EventsTable({ events, error, onChanged }: { events: TankEvent[] 
               </div>
               {e.note && <p class="event-note small">{e.note}</p>}
               <div class="actions event-actions">
-                {e.status === 'suggested' && e.kind === 'topup' && (
-                  <>
-                    <button onClick={() => act({ op: 'confirm', seq: e.seq, detail: 'di' })}>Confirm DI</button>
-                    <button onClick={() => act({ op: 'confirm', seq: e.seq, detail: 'tap' })}>Confirm tap</button>
-                  </>
+                {rowActions(e).map((a) =>
+                  a === 'confirm_di' ? (
+                    <button key={a} onClick={() => act({ op: 'confirm', seq: e.seq, detail: 'di' })}>Confirm DI</button>
+                  ) : a === 'confirm_tap' ? (
+                    <button key={a} onClick={() => act({ op: 'confirm', seq: e.seq, detail: 'tap' })}>Confirm tap</button>
+                  ) : a === 'confirm' ? (
+                    <button key={a} onClick={() => act({ op: 'confirm', seq: e.seq })}>Confirm</button>
+                  ) : a === 'reject' ? (
+                    <button key={a} onClick={() => act({ op: 'reject', seq: e.seq })}>Reject</button>
+                  ) : a === 'delete' ? (
+                    <button key={a} class="danger" onClick={() => remove(e)}>
+                      Delete
+                    </button>
+                  ) : (
+                    <button key={a} onClick={() => setEditing(e)}>Edit</button>
+                  ),
                 )}
-                {e.status === 'suggested' && e.kind !== 'topup' && <button onClick={() => act({ op: 'confirm', seq: e.seq })}>Confirm</button>}
-                {e.status === 'suggested' && <button onClick={() => act({ op: 'reject', seq: e.seq })}>Reject</button>}
-                {e.status === 'rejected' && <button onClick={() => act({ op: 'confirm', seq: e.seq })}>Confirm</button>}
-                {e.source === 'manual' && (
-                  <button class="danger" onClick={() => remove(e)}>
-                    Delete
-                  </button>
-                )}
-                <button onClick={() => setEditing(e)}>Edit</button>
               </div>
             </li>
           ))}
         </ul>
       )}
+      {truncated && <p class="muted small">Older events are stored on the device but left out here to save memory.</p>}
       {logging && <EventDialog onClose={() => setLogging(false)} onSaved={onChanged} />}
       {editing && <EventDialog original={editing} onClose={() => setEditing(null)} onSaved={onChanged} />}
     </section>

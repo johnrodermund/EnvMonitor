@@ -72,7 +72,7 @@ struct StatusView {
   int eventsUnsynced = 0;
   unsigned eventsDropped = 0;     //unsynced events lost because the store was full
   int eventsClockAhead = 0;       //unsynced because their updated_at is over a day ahead
-  unsigned long eventsRejected = 0;
+  int eventsRefused = 0;          //the Pi answered 400/422 to their current version
   int eventsLastHttp = 0;
 };
 
@@ -133,7 +133,7 @@ inline std::string statusJson(const StatusView &s) {
   j += ",\"unsynced\":" + std::to_string(s.eventsUnsynced);
   j += ",\"dropped_unsynced\":" + std::to_string(s.eventsDropped);
   j += ",\"clock_ahead\":" + std::to_string(s.eventsClockAhead);
-  j += ",\"rejected\":" + std::to_string(s.eventsRejected);
+  j += ",\"refused\":" + std::to_string(s.eventsRefused);
   j += ",\"last_sync_http\":" + std::to_string(s.eventsLastHttp) + "}";
   return j + "}";
 }

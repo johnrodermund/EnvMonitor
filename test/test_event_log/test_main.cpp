@@ -55,8 +55,9 @@ void test_feeding_candidate_is_feeding_without_detail() {
   log.offerDetected(c, NOW);
   TEST_ASSERT_EQUAL_STRING("feeding", log.find(1)->kind.c_str());
   TEST_ASSERT_EQUAL_STRING("", log.find(1)->detail.c_str());
-  //A feeding doesn't block a top-up at the same time
-  TEST_ASSERT_TRUE(log.offerDetected(topupAt(T0, 6), NOW));
+  //A detected event blocks its own step whatever its kind, so a relabel can't let a duplicate in
+  TEST_ASSERT_FALSE(log.offerDetected(topupAt(T0, 6), NOW));
+  TEST_ASSERT_TRUE(log.offerDetected(topupAt(T0 + 7201, 6), NOW));
 }
 
 void test_rejected_blocks_redetection_within_2h() {
@@ -321,11 +322,11 @@ void test_list_json_newest_first_without_tombstones() {
       "{\"events\":["
       "{\"seq\":2,\"occurred_at\":\"2027-01-15T10:30:00Z\",\"kind\":\"topup\",\"detail\":\"unknown\","
       "\"source\":\"detected\",\"status\":\"suggested\",\"ec_before\":250.000,\"ec_after\":244.000,"
-      "\"ph_before\":6.500,\"ph_after\":6.600,\"note\":\"\",\"backed_up\":false},"
+      "\"ph_before\":6.500,\"ph_after\":6.600,\"note\":\"\",\"backed_up\":false,\"refused\":false},"
       "{\"seq\":1,\"occurred_at\":\"2027-01-15T08:00:00Z\",\"kind\":\"other\",\"detail\":null,"
       "\"source\":\"manual\",\"status\":\"confirmed\",\"ec_before\":null,\"ec_after\":null,"
-      "\"ph_before\":null,\"ph_after\":null,\"note\":\"first \\\"one\\\"\",\"backed_up\":true}"
-      "]}",
+      "\"ph_before\":null,\"ph_after\":null,\"note\":\"first \\\"one\\\"\",\"backed_up\":true,\"refused\":false}"
+      "],\"truncated\":false}",
       json.c_str());
 }
 
@@ -365,6 +366,101 @@ void test_replay_of_november_finds_the_reference_topups() {
   }
 }
 
+//Final review, Important 2: an event the Pi refuses (400/422) stops resending but isn't shown as backed up
+void test_refused_event_is_not_backed_up_until_edited() {
+  EventLog<10> log;
+  unsigned long seq = log.addManual("other", "", T0, "x", NOW);
+  log.markRefused(seq, log.find(seq)->dirtyGen);
+  TEST_ASSERT_NULL(log.nextDirty(NOW));
+  TEST_ASSERT_TRUE(log.find(seq)->refused);
+  TEST_ASSERT_EQUAL_INT(1, log.refusedCount());
+  TEST_ASSERT_TRUE(log.listJson().find("\"backed_up\":false,\"refused\":true") != std::string::npos);
+  EventLog<10> loaded;
+  loaded.loadText(log.saveText());
+  TEST_ASSERT_TRUE(loaded.find(seq)->refused);
+  TEST_ASSERT_NULL(loaded.nextDirty(NOW));
+  log.update(seq, statusEdit("confirmed"), NOW + 1);  //an edit clears it and sends again
+  TEST_ASSERT_FALSE(log.find(seq)->refused);
+  TEST_ASSERT_NOT_NULL(log.nextDirty(NOW + 1));
+}
+
+void test_refused_in_flight_edit_stays_dirty() {
+  EventLog<10> log;
+  unsigned long seq = log.addManual("other", "", T0, "", NOW);
+  unsigned gen = log.find(seq)->dirtyGen;
+  log.update(seq, statusEdit("confirmed"), NOW);
+  log.markRefused(seq, gen);
+  TEST_ASSERT_FALSE(log.find(seq)->refused);
+  TEST_ASSERT_NOT_NULL(log.nextDirty(NOW));
+}
+
+void test_refused_tombstone_is_dropped() {
+  EventLog<10> log;
+  unsigned long seq = log.addManual("other", "", T0, "", NOW);
+  log.remove(seq, NOW);
+  log.markRefused(seq, log.find(seq)->dirtyGen);
+  TEST_ASSERT_NULL(log.find(seq));
+}
+
+//Final review, Important 3b: relabelling a fresh suggestion must not let the next window add a duplicate
+void test_relabelled_detected_event_still_blocks_its_step() {
+  EventLog<10> log;
+  log.offerDetected(topupAt(T0, 4), NOW);
+  EventEdit edit;
+  edit.hasKind = true;
+  edit.kind = "water_change";
+  log.update(1, edit, NOW);
+  TEST_ASSERT_FALSE(log.offerDetected(topupAt(T0 + 600, 6), NOW));
+  TEST_ASSERT_EQUAL_INT(1, log.size());
+}
+
+//Final review, Important 4: the reply has a byte budget, newest events first
+void test_list_json_stops_at_byte_budget() {
+  EventLog<100> log;
+  for (int i = 0; i < 100; i++) {
+    log.addManual("other", "", T0 + i * 60, std::string(200, 'n'), NOW);
+  }
+  std::string json = log.listJson(8000);
+  TEST_ASSERT_TRUE(json.size() <= 8000);
+  TEST_ASSERT_TRUE(json.find("\"truncated\":true") != std::string::npos);
+  TEST_ASSERT_TRUE(json.find("{\"seq\":100,") != std::string::npos);  //the newest is kept
+  TEST_ASSERT_TRUE(json.find("{\"seq\":1,") == std::string::npos);
+  EventLog<10> small;
+  small.addManual("other", "", T0, "", NOW);
+  TEST_ASSERT_TRUE(small.listJson().find("\"truncated\":false") != std::string::npos);
+}
+
+//Promoted minor: seq must never restart after /events.txt is lost, or new events overwrite Pi records
+void test_raise_next_seq_from_saved_high_water_mark() {
+  EventLog<10> log;
+  log.raiseNextSeq(41);
+  TEST_ASSERT_EQUAL_UINT32(41, log.nextSeqValue());
+  TEST_ASSERT_EQUAL_UINT32(41, log.addManual("other", "", T0, "", NOW));
+  log.raiseNextSeq(5);  //never lowers
+  TEST_ASSERT_EQUAL_UINT32(42, log.nextSeqValue());
+}
+
+//Held candidates (Important 3a) must still give the Pi's 9 top-ups
+void test_replay_through_hold_finds_the_reference_topups() {
+  EventLog<100> log;
+  CandidateHold hold;
+  int count = sizeof(novReadings) / sizeof(novReadings[0]);
+  for (int i = DETECT_WINDOW - 1; i < count; i++) {
+    Candidate c = hold.push(detectAt(novReadings + i - (DETECT_WINDOW - 1), DetectLimits()));
+    if (c.found) {
+      log.offerDetected(c, novReadings[i].epoch);
+    }
+  }
+  const char *expected[] = {"2026-11-05T21:16:08Z", "2026-11-06T12:56:08Z", "2026-11-07T15:56:09Z",
+                            "2026-11-08T14:33:06Z", "2026-11-10T01:23:07Z", "2026-11-10T19:43:08Z",
+                            "2026-11-11T18:23:08Z", "2026-11-13T01:53:10Z", "2026-11-13T21:23:10Z"};
+  TEST_ASSERT_EQUAL_INT(9, log.size());
+  for (int i = 0; i < 9; i++) {
+    TEST_ASSERT_EQUAL_STRING(expected[i], utcIso(log.find(i + 1)->occurredAt).c_str());
+    TEST_ASSERT_EQUAL_UINT32(1, log.find(i + 1)->dirtyGen);  //offered once, never replaced
+  }
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_detected_topup_added_suggested_unknown);
@@ -392,5 +488,12 @@ int main() {
   RUN_TEST(test_list_json_newest_first_without_tombstones);
   RUN_TEST(test_validates_fields);
   RUN_TEST(test_replay_of_november_finds_the_reference_topups);
+  RUN_TEST(test_refused_event_is_not_backed_up_until_edited);
+  RUN_TEST(test_refused_in_flight_edit_stays_dirty);
+  RUN_TEST(test_refused_tombstone_is_dropped);
+  RUN_TEST(test_relabelled_detected_event_still_blocks_its_step);
+  RUN_TEST(test_list_json_stops_at_byte_budget);
+  RUN_TEST(test_raise_next_seq_from_saved_high_water_mark);
+  RUN_TEST(test_replay_through_hold_finds_the_reference_topups);
   return UNITY_END();
 }

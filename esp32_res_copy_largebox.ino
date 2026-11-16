@@ -94,7 +94,7 @@ EventLog<100> events;
 SemaphoreHandle_t eventsLock;
 bool eventsSavePending = false;
 int eventsLastHttp = 0;
-unsigned long eventsRejected = 0;
+unsigned long savedNextSeq = 0;  //the seq high-water mark in NVS "events"; loop() only
 // Detection settings, guarded by settingsLock and saved to NVS namespace "events" by loop()
 DetectLimits detectLimits;
 bool hasPendingDetect = false;
@@ -182,6 +182,7 @@ long long epochFromLog(const char *text) {
 // Used only by the sampling task, in detectEvents(); static so they stay off its stack
 DetectSample detectSamples[totalcount];
 char detectTimes[totalcount][24];
+CandidateHold candidateHold;  //keeps a step's strongest candidate until 3 later windows haven't beaten it
 
 //Runs the detection rule over the reading log after each recorded reading, and fills before/after
 //values of events that lack them. Copies the log under readingsLock, then changes events under eventsLock.
@@ -214,10 +215,11 @@ void detectEvents() {
   xSemaphoreTake(settingsLock, portMAX_DELAY);
   DetectLimits limits = detectLimits;
   xSemaphoreGive(settingsLock);
-  Candidate candidate;
+  Candidate window;
   if (usable >= DETECT_WINDOW) {
-    candidate = detectAt(detectSamples + usable - DETECT_WINDOW, limits);
+    window = detectAt(detectSamples + usable - DETECT_WINDOW, limits);
   }
+  Candidate candidate = candidateHold.push(window);  //every window counts, found or not
   xSemaphoreTake(eventsLock, portMAX_DELAY);
   bool changed = events.offerDetected(candidate, now);
   changed = events.fillDeltas(detectSamples, usable, now) || changed;
@@ -395,25 +397,36 @@ String eventsStatus() {
   xSemaphoreTake(eventsLock, portMAX_DELAY);
   String text = "events count=" + String(events.size()) + " unsynced=" + String(events.dirtyCount()) +
                 " dropped_unsynced=" + String(events.droppedUnsynced()) +
-                " clock_ahead=" + String(events.futureCount(now));
+                " clock_ahead=" + String(events.futureCount(now)) + " refused=" + String(events.refusedCount());
   xSemaphoreGive(eventsLock);
-  return text + " rejected=" + String(eventsRejected) + " last_http=" + String(eventsLastHttp) + "\n";
+  return text + " last_http=" + String(eventsLastHttp) + "\n";
 }
 
 //Writes /events.txt when events changed. Returns true when it wrote.
+//The seq high-water mark goes to NVS first: a lost or re-seeded /events.txt must never let a new
+//event reuse a seq, which would overwrite an unrelated record on the Pi.
 bool saveEvents() {
   xSemaphoreTake(eventsLock, portMAX_DELAY);
   bool pending = eventsSavePending;
   std::string text;
+  unsigned long nextSeq = events.nextSeqValue();
   if (pending) {
     text = events.saveText();
     eventsSavePending = false;
   }
   xSemaphoreGive(eventsLock);
-  if (pending) {
-    readingStore.write(events.path(), text);
+  if (!pending) {
+    return false;
   }
-  return pending;
+  if (nextSeq > savedNextSeq) {
+    Preferences eventPrefs;
+    eventPrefs.begin("events", false);
+    eventPrefs.putULong("next_seq", nextSeq);
+    eventPrefs.end();
+    savedNextSeq = nextSeq;
+  }
+  readingStore.write(events.path(), text);
+  return true;
 }
 
 //PUTs one changed event to <url>/events/<uid>, sharing the readings upload's backoff.
@@ -456,13 +469,14 @@ bool syncNextEvent() {
     apiNextAttempt = millis() + retryDelayMs(apiFailures);
     return true;
   }
-  if (outcome == SendOutcome::Rejected) {
-    eventsRejected++;  //the Pi will never take this version; the next edit is sent again
-  }
   apiFailures = 0;
   apiNextAttempt = 0;
   xSemaphoreTake(eventsLock, portMAX_DELAY);
-  events.markSynced(event.seq, event.dirtyGen);
+  if (outcome == SendOutcome::Rejected) {
+    events.markRefused(event.seq, event.dirtyGen);  //not resent, shown as not backed up; an edit retries
+  } else {
+    events.markSynced(event.seq, event.dirtyGen);
+  }
   eventsSavePending = true;  //the synced state is saved too, so a reboot doesn't resend everything
   xSemaphoreGive(eventsLock);
   return true;
@@ -793,8 +807,8 @@ std::string statusText() {
   s.eventsUnsynced = events.dirtyCount();
   s.eventsDropped = events.droppedUnsynced();
   s.eventsClockAhead = events.futureCount(epoch);
+  s.eventsRefused = events.refusedCount();
   xSemaphoreGive(eventsLock);
-  s.eventsRejected = eventsRejected;
   s.eventsLastHttp = eventsLastHttp;
   return statusJson(s);
 }
@@ -1021,6 +1035,12 @@ void restoreAllData() {
   if (!events.loadText(readingStore.read(events.path()))) {
     Serial.println("No saved events");
   }
+  Preferences eventPrefs;
+  if (eventPrefs.begin("events", true)) {
+    savedNextSeq = eventPrefs.getULong("next_seq", 0);
+    eventPrefs.end();
+  }
+  events.raiseNextSeq(savedNextSeq);
   //settings variables below
   interval0 = readFile("/interval0.txt").toInt();
   title = readFile("/title.txt");

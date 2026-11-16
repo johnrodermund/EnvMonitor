@@ -100,6 +100,56 @@ inline Candidate detectAt(const DetectSample *last12, const DetectLimits &limits
   return c;
 }
 
+//Larger median change wins; an exact tie goes to the larger mean change
+inline bool candidateStronger(const Candidate &a, const Candidate &b) {
+  return a.size > b.size || (a.size == b.size && a.meanSize > b.meanSize);
+}
+
+//One step crosses the threshold over several windows, the strongest 20-30 minutes after the first.
+//The hold keeps the strongest candidate of a step and releases it once HOLD_WINDOWS later windows
+//haven't beaten it, so the owner never confirms a half-formed suggestion and the Pi gets one version.
+//Not saved: a reboot drops a held candidate, which the windows after boot usually find again.
+class CandidateHold {
+
+public:
+
+  static const int HOLD_WINDOWS = 3;
+  static const long long SAME_STEP_S = 2 * 3600;
+
+  //Feed every window's result, found or not. Returns a candidate to offer, or one with found false.
+  Candidate push(const Candidate &c) {
+    Candidate out;
+    if (!held.found) {
+      held = c;
+      quiet = 0;
+      return out;
+    }
+    bool sameStep = c.found && c.topup == held.topup &&
+                    (c.occurredAt > held.occurredAt ? c.occurredAt - held.occurredAt : held.occurredAt - c.occurredAt) <= SAME_STEP_S;
+    if (c.found && !sameStep) {
+      out = held;  //a different step: the held one is final
+      held = c;
+      quiet = 0;
+      return out;
+    }
+    if (sameStep && candidateStronger(c, held)) {
+      held = c;
+      quiet = 0;
+      return out;
+    }
+    if (++quiet >= HOLD_WINDOWS) {
+      out = held;
+      held = Candidate();
+    }
+    return out;
+  }
+
+private:
+
+  Candidate held;
+  int quiet = 0;
+};
+
 //Local time as the reading log writes it: "YYYY,MM-1,DD,HH,MM,SS" (month is 1-12, "-1" is literal)
 struct LogTime {
   int year, month, day, hour, minute, second;
