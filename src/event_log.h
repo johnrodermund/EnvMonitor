@@ -45,7 +45,8 @@ const long long EVENT_MAX_AHEAD_S = 86400;     //an updated_at further ahead tha
 const size_t EVENT_NOTE_MAX_CHARS = 200;
 
 inline bool validEventKind(const std::string &kind) {
-  return kind == "topup" || kind == "feeding" || kind == "buffer" || kind == "water_change" || kind == "other";
+  return kind == "topup" || kind == "feeding" || kind == "buffer" || kind == "water_change" || kind == "other" ||
+         kind == "ph_swing" || kind == "nutrients";
 }
 
 //Empty strings mean "not given". Notes are counted in characters, not UTF-8 bytes, as the Pi counts them.
@@ -111,7 +112,7 @@ public:
       bool nearOrigin = e.originAt != 0 && llabs(c.occurredAt - e.originAt) <= EVENT_NEAR_S;
       //A detected event blocks its own step whatever the owner relabelled it to
       bool near = (sameKind && (llabs(c.occurredAt - e.occurredAt) <= EVENT_NEAR_S || nearOrigin)) ||
-                  (e.source == "detected" && nearOrigin);
+                  (e.source == "detected" && e.size > 0 && nearOrigin);  //size 0: not a step (pH swing records)
       if (!near) {
         continue;
       }
@@ -161,6 +162,43 @@ public:
     return e.seq;
   }
 
+  //Adds a detected record that isn't a step (pH swing, buffer/nutrient suggestion, temperature warning).
+  //Returns the new event's seq, or 0 when the clock isn't set. Fields must already be valid.
+  unsigned long addDetected(const std::string &kind, const std::string &status, long long occurredAt,
+                            const std::string &note, float phBefore, float phAfter, long long now) {
+    if (!clockIsSet(now)) {
+      return 0;
+    }
+    TankEvent &e = addSlot();
+    e.kind = kind;
+    e.detail = "";
+    e.source = "detected";
+    e.status = status;
+    e.occurredAt = occurredAt;
+    e.originAt = occurredAt;
+    e.note = note;
+    e.phBefore = phBefore;
+    e.phAfter = phAfter;
+    touch(e, now);
+    return e.seq;
+  }
+
+  //Whether a buffer, nutrients or water change event (not rejected or deleted) happened in the last windowS seconds
+  bool recentFix(long long now, long long windowS) const {
+    for (int i = 0; i < count; i++) {
+      const TankEvent &e = items[i];
+      if (e.deleted || e.status == "rejected" ||
+          (e.kind != "buffer" && e.kind != "nutrients" && e.kind != "water_change")) {
+        continue;
+      }
+      long long age = now - e.occurredAt;
+      if (age >= 0 && age <= windowS) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   //Editing a detected event confirms it, unless the edit sets the status itself
   bool update(unsigned long seq, const EventEdit &edit, long long now) {
     int i = indexOf(seq);
@@ -204,7 +242,7 @@ public:
     return true;
   }
 
-  //Fills before/after medians for events that lack them, once 6 readings on each side exist.
+  //Fills before/after medians for events that lack them (no EC and no pH yet), once 6 readings on each side exist.
   //recent holds readings oldest first. Returns true when it changed anything.
   bool fillDeltas(const DetectSample *recent, int sampleCount, long long now) {
     if (!clockIsSet(now)) {
@@ -213,8 +251,8 @@ public:
     bool changed = false;
     for (int i = 0; i < count; i++) {
       TankEvent &e = items[i];
-      if (e.deleted || !std::isnan(e.ecBefore)) {
-        continue;
+      if (e.deleted || !std::isnan(e.ecBefore) || !std::isnan(e.phBefore)) {
+        continue;  //already filled, or a pH swing record carrying its own values
       }
       int split = 0;
       while (split < sampleCount && recent[split].epoch < e.occurredAt) {

@@ -461,6 +461,84 @@ void test_replay_through_hold_finds_the_reference_topups() {
   }
 }
 
+void test_add_detected_record() {
+  EventLog<10> log;
+  unsigned long seq = log.addDetected("ph_swing", "confirmed", T0, "Swing 1.00 (5.00-6.00).", 5.0f, 6.0f, NOW);
+  TEST_ASSERT_EQUAL_UINT32(1, seq);
+  const TankEvent *e = log.find(seq);
+  TEST_ASSERT_EQUAL_STRING("ph_swing", e->kind.c_str());
+  TEST_ASSERT_EQUAL_STRING("detected", e->source.c_str());
+  TEST_ASSERT_EQUAL_STRING("confirmed", e->status.c_str());
+  TEST_ASSERT_EQUAL_STRING("", e->detail.c_str());
+  TEST_ASSERT_EQUAL_STRING("Swing 1.00 (5.00-6.00).", e->note.c_str());
+  TEST_ASSERT_EQUAL_INT64(T0, e->occurredAt);
+  TEST_ASSERT_EQUAL_INT64(T0, e->originAt);
+  TEST_ASSERT_TRUE(std::isnan(e->ecBefore));
+  TEST_ASSERT_TRUE(std::isnan(e->ecAfter));
+  TEST_ASSERT_FLOAT_WITHIN(0.001, 5.0, e->phBefore);
+  TEST_ASSERT_FLOAT_WITHIN(0.001, 6.0, e->phAfter);
+  TEST_ASSERT_TRUE(e->dirty());
+  std::string error;
+  TEST_ASSERT_TRUE(validEventFields("ph_swing", "", "confirmed", "", error));
+  TEST_ASSERT_TRUE(validEventFields("nutrients", "", "suggested", "", error));
+  TEST_ASSERT_EQUAL_UINT32(0, log.addDetected("nutrients", "suggested", T0, "", NAN, NAN, 1000));
+}
+
+void test_recent_fix_window_and_rejected() {
+  EventLog<10> log;
+  log.addManual("buffer", "", T0, "", NOW);
+  TEST_ASSERT_TRUE(log.recentFix(T0 + 3600, 172800));
+  TEST_ASSERT_TRUE(log.recentFix(T0 + 172800, 172800));
+  TEST_ASSERT_FALSE(log.recentFix(T0 + 172801, 172800));
+  TEST_ASSERT_FALSE(log.recentFix(T0 - 10, 172800));  //not yet happened
+  const long long T1 = T0 + 1000000;
+  unsigned long n = log.addDetected("nutrients", "suggested", T1, "", NAN, NAN, NOW);
+  TEST_ASSERT_TRUE(log.recentFix(T1 + 100, 172800));  //a suggestion counts
+  log.update(n, statusEdit("rejected"), NOW);
+  TEST_ASSERT_FALSE(log.recentFix(T1 + 100, 172800));
+  unsigned long w = log.addManual("water_change", "", T1, "", NOW);
+  TEST_ASSERT_TRUE(log.recentFix(T1 + 100, 172800));
+  log.remove(w, NOW);
+  TEST_ASSERT_FALSE(log.recentFix(T1 + 100, 172800));
+  log.addManual("other", "", T1, "", NOW);
+  log.addDetected("ph_swing", "confirmed", T1, "", 5, 6, NOW);
+  TEST_ASSERT_FALSE(log.recentFix(T1 + 100, 172800));
+}
+
+void test_new_kinds_round_trip_save_load() {
+  EventLog<10> log;
+  log.addDetected("ph_swing", "confirmed", T0, "Swing 1.38 (4.96-6.34).", 4.96f, 6.34f, NOW);
+  log.addDetected("nutrients", "suggested", T0 + 3600, "pH jumped 0.81 at lights on", 5.1f, 5.9f, NOW);
+  EventLog<10> loaded;
+  TEST_ASSERT_TRUE(loaded.loadText(log.saveText()));
+  TEST_ASSERT_EQUAL_INT(2, loaded.size());
+  TEST_ASSERT_EQUAL_STRING("ph_swing", loaded.find(1)->kind.c_str());
+  TEST_ASSERT_EQUAL_STRING("nutrients", loaded.find(2)->kind.c_str());
+  TEST_ASSERT_EQUAL_STRING(log.saveText().c_str(), loaded.saveText().c_str());
+}
+
+void test_fill_deltas_keeps_detected_ph() {
+  EventLog<10> log;
+  DetectSample s[14];
+  for (int i = 0; i < 14; i++) {
+    s[i].epoch = T0 + i * 600;
+    s[i].ec = 250;
+    s[i].ph = 6.5f;
+  }
+  unsigned long seq = log.addDetected("ph_swing", "confirmed", s[7].epoch, "", 5.0f, 6.0f, NOW);
+  TEST_ASSERT_FALSE(log.fillDeltas(s, 14, NOW + 1));
+  TEST_ASSERT_FLOAT_WITHIN(0.001, 5.0, log.find(seq)->phBefore);
+  TEST_ASSERT_TRUE(std::isnan(log.find(seq)->ecBefore));
+}
+
+void test_swing_records_do_not_block_topups() {
+  EventLog<10> log;
+  log.addDetected("buffer", "suggested", T0, "", 5.0f, 5.8f, NOW);
+  log.addDetected("ph_swing", "confirmed", T0, "", 5.0f, 5.8f, NOW);
+  TEST_ASSERT_TRUE(log.offerDetected(topupAt(T0 + 600, 6), NOW));
+  TEST_ASSERT_EQUAL_INT(3, log.size());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_detected_topup_added_suggested_unknown);
@@ -495,5 +573,10 @@ int main() {
   RUN_TEST(test_list_json_stops_at_byte_budget);
   RUN_TEST(test_raise_next_seq_from_saved_high_water_mark);
   RUN_TEST(test_replay_through_hold_finds_the_reference_topups);
+  RUN_TEST(test_add_detected_record);
+  RUN_TEST(test_recent_fix_window_and_rejected);
+  RUN_TEST(test_new_kinds_round_trip_save_load);
+  RUN_TEST(test_fill_deltas_keeps_detected_ph);
+  RUN_TEST(test_swing_records_do_not_block_topups);
   return UNITY_END();
 }
