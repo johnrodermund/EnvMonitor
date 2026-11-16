@@ -4,7 +4,7 @@ import { MetricCard } from '../components/MetricCard';
 import { Progress } from '../components/Progress';
 import { ReviewPanel } from '../components/ReviewPanel';
 import { clock, hasReadings, nextReading } from '../logic/dashboard';
-import { fmt, localTime } from '../logic/format';
+import { fmt, localTime, ecUnit } from '../logic/format';
 import { BUILTIN_RANGES, levelFor, tagsFor } from '../logic/status';
 import { StatusContext } from '../status-context';
 import { usePoll } from '../usePoll';
@@ -55,7 +55,7 @@ export function Dashboard() {
 
   const cards = [
     { key: 'ph' as const, label: 'pH', unit: '', slopeUnit: 'pH', digits: 2, value: last?.ph ?? null, avg: status.averages.ph, st: stat('ph'), range: ranges.ph },
-    { key: 'ec' as const, label: 'EC', unit: 'µS/cm', slopeUnit: 'µS/cm', digits: 0, value: last?.ec ?? null, avg: status.averages.ec, st: stat('ec'), range: ranges.ec },
+    { key: 'ec' as const, label: 'EC', unit: ecUnit(status.ec_temp_coef), slopeUnit: 'µS/cm', digits: 0, value: last?.ec ?? null, avg: status.averages.ec, st: stat('ec'), range: ranges.ec },
     { key: 'temp' as const, label: 'Temperature', unit: '°F', slopeUnit: '°F', digits: 1, value: last?.wt ?? null, avg: status.averages.wt, st: stat('water_temp_f'), range: ranges.temp },
   ];
 

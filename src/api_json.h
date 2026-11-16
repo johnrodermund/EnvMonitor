@@ -7,6 +7,7 @@
 #include "event_detect.h"
 #include "json_text.h"
 #include "reading_log.h"
+#include "sensor_math.h"
 
 //JSON builders for the web API. No dependency on ReadingCycle: the sketch fills StatusView.
 
@@ -22,19 +23,47 @@ inline std::string isoFromLogTimestamp(const std::string &ts) {
   return text;
 }
 
-//[[time|null, ph, ec, wt], ...] oldest first
+//[[time|null, ph, ec, wt], ...] oldest first. The log keeps raw EC; ec here is referred to 25 C with
+//ecTempCoef (% per deg C, 0 for raw), so a new coefficient applies to the whole history at once.
 template <int N>
-std::string readingsJson(const ReadingLog<N> &log) {
+std::string readingsJson(const ReadingLog<N> &log, float ecTempCoef = 0) {
   std::string json = "[";
   for (int i = 0; i < log.size(); i++) {
     std::string iso = isoFromLogTimestamp(log.timestampAt(i));
     if (i > 0) json += ",";
     json += "[" + (iso.empty() ? std::string("null") : jsonString(iso));
     json += "," + jsonNumber(log.ph().getOrderedValue(i));
-    json += "," + jsonNumber(log.ec().getOrderedValue(i));
+    json += "," + jsonNumber(ecAt25(log.ec().getOrderedValue(i), log.wt().getOrderedValue(i), ecTempCoef));
     json += "," + jsonNumber(log.wt().getOrderedValue(i)) + "]";
   }
   return json + "]";
+}
+
+//Mean and sample standard deviation of the log's EC referred to 25 C; 0 and 0 for an empty log
+template <int N>
+void compensatedEcStats(const ReadingLog<N> &log, float ecTempCoef, float &mean, float &std) {
+  int n = log.size();
+  double sum = 0, sumSq = 0;
+  for (int i = 0; i < n; i++) {
+    double ec = ecAt25(log.ec().getOrderedValue(i), log.wt().getOrderedValue(i), ecTempCoef);
+    sum += ec;
+    sumSq += ec * ec;
+  }
+  mean = n ? sum / n : 0;
+  double var = n > 1 ? (sumSq - sum * sum / n) / (n - 1) : 0;
+  std = var > 0 ? sqrt(var) : 0;
+}
+
+//% per deg C, 0 to 5; 0 turns EC temperature compensation off. out is unchanged on an error.
+inline bool parseEcTempCoef(const std::string &text, float &out, std::string &error) {
+  char *end;
+  float value = strtof(text.c_str(), &end);
+  if (text.empty() || *end || !(value >= 0 && value <= 5)) {
+    error = "ec_temp_coef must be a number from 0 to 5 (% per deg C)";
+    return false;
+  }
+  out = value;
+  return true;
 }
 
 struct StatusView {
@@ -74,6 +103,7 @@ struct StatusView {
   int eventsClockAhead = 0;       //unsynced because their updated_at is over a day ahead
   int eventsRefused = 0;          //the Pi answered 400/422 to their current version
   int eventsLastHttp = 0;
+  float ecTempCoef = 0;  //EC values are referred to 25 C when not 0
 };
 
 inline std::string jsonPair(float mean, float std) {
@@ -86,6 +116,7 @@ inline std::string statusJson(const StatusView &s) {
   j += ",\"interval_min\":" + std::to_string(s.intervalMin);
   j += ",\"uptime_s\":" + std::to_string(s.uptimeS);
   j += ",\"free_heap\":" + std::to_string(s.freeHeap);
+  j += ",\"ec_temp_coef\":" + jsonNumber(s.ecTempCoef);
   j += ",\"count\":" + std::to_string(s.count);
   if (s.count == 0) {
     j += ",\"last_reading\":null";
@@ -138,11 +169,11 @@ inline std::string statusJson(const StatusView &s) {
   return j + "}";
 }
 
-inline std::string settingsJson(int intervalMin, const std::string &title, const DetectLimits &limits) {
+inline std::string settingsJson(int intervalMin, const std::string &title, const DetectLimits &limits, float ecTempCoef) {
   return "{\"interval_min\":" + std::to_string(intervalMin) + ",\"title\":" + jsonString(title) +
          ",\"topup_min_drop\":" + jsonNumber(limits.topupMinDrop) +
          ",\"feeding_min_rise\":" + jsonNumber(limits.feedingMinRise) +
-         ",\"feeding_enabled\":" + jsonBool(limits.feedingEnabled) + "}";
+         ",\"feeding_enabled\":" + jsonBool(limits.feedingEnabled) + ",\"ec_temp_coef\":" + jsonNumber(ecTempCoef) + "}";
 }
 
 //An empty value means "not provided"

@@ -3,6 +3,7 @@ import { getEvents, getRanges, getReadings } from '../api';
 import { EventsTable } from '../components/EventsTable';
 import { MetricChart } from '../components/MetricChart';
 import { toCsv } from '../logic/csv';
+import { ecUnit } from '../logic/format';
 import { BUILTIN_RANGES } from '../logic/status';
 import { rowSeconds, windowRows } from '../logic/window';
 import { StatusContext } from '../status-context';
@@ -104,7 +105,7 @@ export function Charts() {
           </p>
           <div class="chart-wrap" key={String(hours)}>
             <MetricChart title="pH" unit="" digits={2} times={times} values={ph} target={ranges.ph.target} events={markers} />
-            <MetricChart title="EC" unit="µS/cm" digits={0} times={times} values={ec} target={ranges.ec.target} events={markers} />
+            <MetricChart title="EC" unit={ecUnit(status?.ec_temp_coef)} digits={0} times={times} values={ec} target={ranges.ec.target} events={markers} />
             <MetricChart title="Temp" unit="°F" digits={1} times={times} values={wt} target={ranges.temp.target} />
           </div>
         </>

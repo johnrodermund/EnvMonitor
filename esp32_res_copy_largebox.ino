@@ -98,6 +98,11 @@ unsigned long savedNextSeq = 0;  //the seq high-water mark in NVS "events"; loop
 // Detection settings, guarded by settingsLock and saved to NVS namespace "events" by loop()
 DetectLimits detectLimits;
 bool hasPendingDetect = false;
+// EC temperature coefficient, % per deg C (0 = off), guarded by settingsLock, saved to NVS "sensor" by
+// loop(). The reading log keeps raw EC; status, readings, detection and the upload refer it to 25 C.
+const float defaultEcTempCoef = 2.0f;
+float ecTempCoef = defaultEcTempCoef;
+bool hasPendingEcCoef = false;
 
 //Saved API settings as handlers see them; defined up here because the .ino prototypes need it
 struct SavedApiConfig {
@@ -105,6 +110,14 @@ struct SavedApiConfig {
   String device;
   bool tokenSet;
 };
+
+//The first function in the file: the .ino prototypes go above it, so every type they use is defined above here
+float currentEcTempCoef() {
+  xSemaphoreTake(settingsLock, portMAX_DELAY);
+  float coef = ecTempCoef;
+  xSemaphoreGive(settingsLock);
+  return coef;
+}
 
 // Webserver
 AsyncWebServer server(80);
@@ -191,11 +204,12 @@ void detectEvents() {
   if (!clockIsSet(now)) {
     return;  //no event gets a timestamp from an unsynced clock
   }
+  float coef = currentEcTempCoef();
   xSemaphoreTake(readingsLock, portMAX_DELAY);
   int count = readings.size();
   for (int i = 0; i < count; i++) {
     snprintf(detectTimes[i], sizeof(detectTimes[i]), "%s", readings.timestampAt(i));
-    detectSamples[i].ec = readings.ec().getOrderedValue(i);
+    detectSamples[i].ec = ecAt25(readings.ec().getOrderedValue(i), readings.wt().getOrderedValue(i), coef);
     detectSamples[i].ph = readings.ph().getOrderedValue(i);
   }
   xSemaphoreGive(readingsLock);
@@ -329,7 +343,7 @@ public:
     queued.ph = reading.ph;
     queued.phUncertainty = reading.phUncertainty;
     queued.phAdc = cycle.lastPhAdc();
-    queued.ec = reading.ec;
+    queued.ec = ecAt25(reading.ec, reading.wt, currentEcTempCoef());  //ec_adc stays raw
     queued.ecAdc = lastEcAdc;
     queued.wt = reading.wt;
     xSemaphoreTake(apiQueueLock, portMAX_DELAY);
@@ -621,15 +635,19 @@ bool savePendingSettings() {
   bool saveTitle = hasPendingTitle;
   bool saveInterval = hasPendingInterval && !saveTitle;
   bool saveDetect = hasPendingDetect && !saveTitle && !saveInterval;
+  bool saveEcCoef = hasPendingEcCoef && !saveTitle && !saveInterval && !saveDetect;
   String newTitle = pendingTitle;
   unsigned long newInterval = pendingInterval;
   DetectLimits newLimits = detectLimits;
+  float newEcCoef = ecTempCoef;
   if (saveTitle) {
     hasPendingTitle = false;
   } else if (saveInterval) {
     hasPendingInterval = false;
   } else if (saveDetect) {
     hasPendingDetect = false;
+  } else if (saveEcCoef) {
+    hasPendingEcCoef = false;
   }
   xSemaphoreGive(settingsLock);
   if (saveTitle) {
@@ -639,8 +657,24 @@ bool savePendingSettings() {
     writeFile("/interval0.txt", String(newInterval).c_str());
   } else if (saveDetect) {
     saveDetectLimits(newLimits);
+  } else if (saveEcCoef) {
+    Preferences sensorPrefs;
+    sensorPrefs.begin("sensor", false);
+    sensorPrefs.putFloat("ec_coef", newEcCoef);
+    sensorPrefs.end();
   }
-  return saveInterval || saveTitle || saveDetect;
+  return saveInterval || saveTitle || saveDetect || saveEcCoef;
+}
+
+//Called at boot only; the default when nothing was saved or the saved value is out of range
+float loadEcTempCoef() {
+  float coef = defaultEcTempCoef;
+  Preferences sensorPrefs;
+  if (sensorPrefs.begin("sensor", true)) {
+    coef = sensorPrefs.getFloat("ec_coef", defaultEcTempCoef);
+    sensorPrefs.end();
+  }
+  return (coef >= 0 && coef <= 5) ? coef : defaultEcTempCoef;
 }
 
 // NVS keys are at most 15 characters, so the keys are shorter than the API's field names
@@ -744,6 +778,7 @@ std::string statusText() {
   xSemaphoreTake(settingsLock, portMAX_DELAY);
   s.title = title.c_str();
   s.intervalMin = interval0 / 60000;
+  s.ecTempCoef = ecTempCoef;
   xSemaphoreGive(settingsLock);
   s.uptimeS = (unsigned long)(esp_timer_get_time() / 1000000);
   s.freeHeap = ESP.getFreeHeap();
@@ -753,16 +788,15 @@ std::string statusText() {
   if (s.count > 0) {
     s.lastTime = readings.timestampAt(s.count - 1);
     s.ph = readings.ph().currentValue;
-    s.ec = readings.ec().currentValue;
+    s.ec = ecAt25(readings.ec().currentValue, readings.wt().currentValue, s.ecTempCoef);
     s.wt = readings.wt().currentValue;
     s.phPm = lastPhUncertainty;
   }
   s.means[0] = readings.ph().mean;
-  s.means[1] = readings.ec().mean;
+  compensatedEcStats(readings, s.ecTempCoef, s.means[1], s.stds[1]);
   s.means[2] = readings.wt().mean;
   //Rounding can leave a variance a hair below zero
   s.stds[0] = sqrt(max(readings.ph().sVar, 0.0f));
-  s.stds[1] = sqrt(max(readings.ec().sVar, 0.0f));
   s.stds[2] = sqrt(max(readings.wt().sVar, 0.0f));
   xSemaphoreGive(readingsLock);
 
@@ -777,7 +811,7 @@ std::string statusText() {
   s.manualSeq = cycle.manualSeq();
   const Reading &manual = cycle.manualReading();
   s.manualPh = manual.ph;
-  s.manualEc = manual.ec;
+  s.manualEc = ecAt25(manual.ec, manual.wt, s.ecTempCoef);
   s.manualWt = manual.wt;
   s.calibrationSeq = cycle.calibrationSeq();
   s.ph4Adc = cycle.ph4();
@@ -856,15 +890,16 @@ void registerApiRoutes() {
   });
 
   server.on("/api/readings", HTTP_GET, [](AsyncWebServerRequest *request) {
+    float coef = currentEcTempCoef();
     xSemaphoreTake(readingsLock, portMAX_DELAY);
-    std::string json = readingsJson(readings);
+    std::string json = readingsJson(readings, coef);
     xSemaphoreGive(readingsLock);
     sendJson(request, 200, json);
   });
 
   server.on("/api/settings", HTTP_GET, [](AsyncWebServerRequest *request) {
     xSemaphoreTake(settingsLock, portMAX_DELAY);
-    std::string json = settingsJson(interval0 / 60000, title.c_str(), detectLimits);
+    std::string json = settingsJson(interval0 / 60000, title.c_str(), detectLimits, ecTempCoef);
     xSemaphoreGive(settingsLock);
     sendJson(request, 200, json);
   });
@@ -875,14 +910,21 @@ void registerApiRoutes() {
     String topupMinDrop = formValue(request, "topup_min_drop");
     String feedingMinRise = formValue(request, "feeding_min_rise");
     String feedingEnabled = formValue(request, "feeding_enabled");
+    String ecCoefText = formValue(request, "ec_temp_coef");
     bool hasBasic = interval.length() || newTitle.length();
     bool hasDetect = topupMinDrop.length() || feedingMinRise.length() || feedingEnabled.length();
+    bool hasEcCoef = ecCoefText.length() > 0;
     std::string error;
-    if (!hasBasic && !hasDetect) {
+    if (!hasBasic && !hasDetect && !hasEcCoef) {
       sendError(request, 400, "nothing to save");
       return;
     }
     if (hasBasic && !validateSettings(interval.c_str(), newTitle.c_str(), error)) {
+      sendError(request, 400, error);
+      return;
+    }
+    float newEcCoef = 0;
+    if (hasEcCoef && !parseEcTempCoef(ecCoefText.c_str(), newEcCoef, error)) {
       sendError(request, 400, error);
       return;
     }
@@ -905,6 +947,10 @@ void registerApiRoutes() {
       if (hasDetect) {
         detectLimits = limits;
         hasPendingDetect = true;
+      }
+      if (hasEcCoef) {
+        ecTempCoef = newEcCoef;
+        hasPendingEcCoef = true;
       }
     }
     xSemaphoreGive(settingsLock);
@@ -1101,6 +1147,7 @@ void setup() {
   eventsLock = xSemaphoreCreateMutex();
   hasDeviceRanges = loadDeviceRanges(deviceRanges);
   detectLimits = loadDetectLimits();
+  ecTempCoef = loadEcTempCoef();
   Serial.begin(115200);
 
   Serial.println("Starting the LittleFS Webserver..");

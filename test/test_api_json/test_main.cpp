@@ -63,8 +63,51 @@ void settings_json_shape(void) {
   limits.feedingEnabled = true;
   TEST_ASSERT_EQUAL_STRING(
       "{\"interval_min\":10,\"title\":\"T\",\"topup_min_drop\":3.000,\"feeding_min_rise\":5.000,"
-      "\"feeding_enabled\":true}",
-      settingsJson(10, "T", limits).c_str());
+      "\"feeding_enabled\":true,\"ec_temp_coef\":1.670}",
+      settingsJson(10, "T", limits, 1.67f).c_str());
+}
+
+//The log keeps raw EC; every reply applies the current coefficient, so a change re-applies to all history
+void readings_json_compensates_ec(void) {
+  ReadingLog<200> log;
+  log.append("2026,11-1,04,16,33,06", 6.2f, 235.0f, 71.6f);  //22 C
+  TEST_ASSERT_EQUAL_STRING("[[\"2026-11-04T16:33:06\",6.200,250.000,71.600]]", readingsJson(log, 2.0f).c_str());
+}
+
+void ec_stats_use_compensated_values(void) {
+  ReadingLog<200> log;
+  log.append("", 6, 235.0f, 71.6f);  //250 at 25 C
+  log.append("", 6, 245.0f, 77.0f);  //245 at 25 C
+  log.append("", 6, 248.0f, 77.0f);  //248
+  float mean, std;
+  compensatedEcStats(log, 2.0f, mean, std);
+  TEST_ASSERT_FLOAT_WITHIN(0.01, 247.667, mean);
+  TEST_ASSERT_FLOAT_WITHIN(0.01, 2.517, std);
+  ReadingLog<200> empty;
+  compensatedEcStats(empty, 2.0f, mean, std);
+  TEST_ASSERT_FLOAT_WITHIN(0.001, 0, mean);
+  TEST_ASSERT_FLOAT_WITHIN(0.001, 0, std);
+}
+
+void ec_coef_parse_rules(void) {
+  float coef = 9;
+  std::string error;
+  TEST_ASSERT_TRUE(parseEcTempCoef("1.67", coef, error));
+  TEST_ASSERT_FLOAT_WITHIN(0.0001, 1.67, coef);
+  TEST_ASSERT_TRUE(parseEcTempCoef("0", coef, error));  //0 turns compensation off
+  TEST_ASSERT_FLOAT_WITHIN(0.0001, 0, coef);
+  TEST_ASSERT_FALSE(parseEcTempCoef("-1", coef, error));
+  TEST_ASSERT_EQUAL_STRING("ec_temp_coef must be a number from 0 to 5 (% per deg C)", error.c_str());
+  TEST_ASSERT_FALSE(parseEcTempCoef("5.5", coef, error));
+  TEST_ASSERT_FALSE(parseEcTempCoef("abc", coef, error));
+  TEST_ASSERT_FALSE(parseEcTempCoef("", coef, error));
+  TEST_ASSERT_FLOAT_WITHIN(0.0001, 0, coef);  //unchanged on an error
+}
+
+void status_json_reports_ec_temp_coef(void) {
+  StatusView s;
+  s.ecTempCoef = 1.67f;
+  TEST_ASSERT_NOT_EQUAL(std::string::npos, statusJson(s).find("\"ec_temp_coef\":1.670"));
 }
 
 void status_json_reports_events(void) {
@@ -108,6 +151,10 @@ int main() {
   RUN_TEST(status_json_escapes_title);
   RUN_TEST(status_json_lists_only_taken_ph_samples);
   RUN_TEST(settings_json_shape);
+  RUN_TEST(readings_json_compensates_ec);
+  RUN_TEST(ec_stats_use_compensated_values);
+  RUN_TEST(ec_coef_parse_rules);
+  RUN_TEST(status_json_reports_ec_temp_coef);
   RUN_TEST(status_json_reports_events);
   RUN_TEST(validate_settings_rules);
   return UNITY_END();

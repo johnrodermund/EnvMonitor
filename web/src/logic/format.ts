@@ -33,3 +33,14 @@ export function reportLocalTime(iso: string): string {
   const p = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
+
+/** EC unit label: the device refers EC to 25 C whenever its temperature coefficient isn't 0. */
+export function ecUnit(ecTempCoef: number | null | undefined): string {
+  return ecTempCoef ? 'µS/cm at 25 °C' : 'µS/cm';
+}
+
+/** The EC temperature coefficient, % per °C: 0 (off) to 5. */
+export function validateEcTempCoef(text: string): string | null {
+  const v = Number(text);
+  return text.trim() === '' || !Number.isFinite(v) || v < 0 || v > 5 ? 'Enter a number from 0 to 5' : null;
+}

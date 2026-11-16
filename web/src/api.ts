@@ -79,6 +79,7 @@ export const saveSettings = (p: {
   topup_min_drop?: number;
   feeding_min_rise?: number;
   feeding_enabled?: boolean;
+  ec_temp_coef?: number;
 }) => {
   const f: Record<string, string> = {};
   if (p.interval !== undefined) f.interval = String(p.interval);
@@ -86,6 +87,7 @@ export const saveSettings = (p: {
   if (p.topup_min_drop !== undefined) f.topup_min_drop = String(p.topup_min_drop);
   if (p.feeding_min_rise !== undefined) f.feeding_min_rise = String(p.feeding_min_rise);
   if (p.feeding_enabled !== undefined) f.feeding_enabled = String(p.feeding_enabled);
+  if (p.ec_temp_coef !== undefined) f.ec_temp_coef = String(p.ec_temp_coef);
   return post('/api/settings', f);
 };
 
