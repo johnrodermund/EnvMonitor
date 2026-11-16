@@ -83,7 +83,7 @@ The owner also wants a daily record of the pH swing, to see whether the swings a
 ### Where it runs
 
 - In `detectEvents()` after each recorded reading, on the copy of the reading log it already makes, outside every lock except the brief ones it takes now. The day metrics, history and trigger logic live in a new host-tested header (`src/ph_swing.h`); the sketch adds the settings, NVS storage and calls.
-- The reading log covers about 33 hours at a 10-minute interval, so a full previous day is available at midnight. At intervals over 13 minutes it isn't, and days are skipped by the 75 % rule. The Settings text says so.
+- The reading log covers about 33 hours at a 10-minute interval, so a full previous day is available at midnight. Under about 6 minutes the 200-reading log holds less than 75 % of a day, so days are skipped by the 75 % rule. The Settings text says so. *(Corrected after review: the first draft had this backwards.)*
 
 ### Pi (PiServer)
 

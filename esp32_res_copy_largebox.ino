@@ -113,6 +113,7 @@ SwingLimits swingLimits;
 SwingHistory swingHistory;
 int lastSwingDay = 0;        //yyyymmdd of the last day whose swing record was made (or skipped)
 long long lastChangeAt = 0;  //UTC seconds of the last light change judged (or skipped)
+long long lastSuggestAt = 0; //UTC seconds of the last buffer/nutrients suggestion added: at most one a day
 bool hasPendingSwing = false;
 
 //Saved API settings as handlers see them; defined up here because the .ino prototypes need it
@@ -282,15 +283,16 @@ void detectSwings(long long now, int n) {
   SwingHistory history = swingHistory;
   int lastDay = lastSwingDay;
   long long lastChange = lastChangeAt;
+  long long lastSuggest = lastSuggestAt;
   int intervalMin = interval0 / 60000;
   xSemaphoreGive(settingsLock);
   bool stateChanged = false;
 
-  //At the first reading of a new local day, the day just ended (skipped under 75 % coverage)
+  //From 01:30, the day just ended (skipped under 75 % coverage)
   DayMetrics day{};
   std::string dayNote;
-  int previousDay = swingSamples[n - 2].localDay;
-  if (swingSamples[n - 1].localDay != previousDay && previousDay != lastDay) {
+  int previousDay = swingDayToRecord(swingSamples, n, lastDay);
+  if (previousDay) {
     day = dayMetrics(swingSamples, n, previousDay, intervalMin);
     if (day.ok) {
       dayNote = swingNote(day, lights);
@@ -321,7 +323,7 @@ void detectSwings(long long now, int n) {
   std::string tempNote;
   long long tempAt = 0;
   bool tempWarning = tempWatch.check(swingEpochs, swingTemps, n, ranges.temp.targetLo, ranges.temp.targetHi,
-                                     tempNote, tempAt);
+                                     intervalMin, tempNote, tempAt);
 
   bool changed = false;
   xSemaphoreTake(eventsLock, portMAX_DELAY);
@@ -329,10 +331,12 @@ void detectSwings(long long now, int n) {
     changed = events.addDetected("ph_swing", "confirmed", day.bigAt, dayNote, day.bigBefore, day.bigAfter, now) ||
               changed;
   }
-  if (suggestion.found && !events.recentFix(now, swingQuietS)) {
-    changed = events.addDetected(suggestion.kind, "suggested", suggestion.at, suggestion.note, change.jumpBefore,
-                                 change.jumpAfter, now) ||
-              changed;
+  if (suggestion.found && swingSuggestionAllowed(now, lastSuggest) && !events.recentFix(now, swingQuietS) &&
+      events.addDetected(suggestion.kind, "suggested", suggestion.at, suggestion.note, change.jumpBefore,
+                         change.jumpAfter, now)) {
+    changed = true;
+    lastSuggest = now;
+    stateChanged = true;
   }
   if (tempWarning) {
     changed = events.addDetected("other", "suggested", tempAt, tempNote, NAN, NAN, now) || changed;
@@ -347,6 +351,7 @@ void detectSwings(long long now, int n) {
     swingHistory = history;
     lastSwingDay = lastDay;
     lastChangeAt = lastChange;
+    lastSuggestAt = lastSuggest;
     hasPendingSwing = true;
     xSemaphoreGive(settingsLock);
   }
@@ -752,6 +757,7 @@ bool savePendingSettings() {
   std::string historyText = saveSwing ? swingHistory.saveText() : "";
   int newLastDay = lastSwingDay;
   long long newLastChange = lastChangeAt;
+  long long newLastSuggest = lastSuggestAt;
   String newTitle = pendingTitle;
   unsigned long newInterval = pendingInterval;
   DetectLimits newLimits = detectLimits;
@@ -797,6 +803,7 @@ bool savePendingSettings() {
     swingPrefs.putString("history", historyText.c_str());
     swingPrefs.putInt("last_day", newLastDay);
     swingPrefs.putLong64("last_chg", newLastChange);
+    swingPrefs.putLong64("last_sug", newLastSuggest);
     swingPrefs.end();
   }
   return saveInterval || saveTitle || saveDetect || saveEcCoef || saveAppearance || saveSwing;
@@ -825,6 +832,7 @@ void loadSwingState() {
   swingHistory.loadText(swingPrefs.getString("history", "").c_str());
   lastSwingDay = swingPrefs.getInt("last_day", 0);
   lastChangeAt = swingPrefs.getLong64("last_chg", 0);
+  lastSuggestAt = swingPrefs.getLong64("last_sug", 0);
   swingPrefs.end();
 }
 

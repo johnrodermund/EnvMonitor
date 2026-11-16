@@ -278,8 +278,8 @@ export function Settings() {
         <h2>pH swings</h2>
         <p class="muted small">
           Each day the device records the pH swing as an event. About 2 hours after each light change it compares the pH jump
-          with this tank's usual and suggests buffer or nutrients when it's well above. Needs a reading interval of 13 minutes or
-          less.
+          with this tank's usual and suggests buffer or nutrients when it's well above. Needs a reading interval of 6 minutes or
+          more, so the 200-reading log holds a full day.
         </p>
         <label>
           Lights on

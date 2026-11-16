@@ -283,7 +283,7 @@ void notes_fit_200_characters() {
   float t[] = {999.9f, 999.9f, 999.9f};
   std::string note;
   long long at;
-  TEST_ASSERT_TRUE(w.check(e, t, 3, -999.9f, 999.8f, note, at));
+  TEST_ASSERT_TRUE(w.check(e, t, 3, -999.9f, 999.8f, 60, note, at));
   TEST_ASSERT_TRUE(chars(note) <= 200);
 }
 
@@ -343,13 +343,14 @@ struct TempFeed {
   int warnings = 0;
   std::string lastNote;
   long long lastAt = 0;
+  long long gap = 0;
   void add(int count, float temp) {
     for (int i = 0; i < count; i++) {
-      e.push_back(DAY0 + (long long)e.size() * 600);
+      e.push_back(DAY0 + gap + (long long)e.size() * 600);
       t.push_back(temp);
       std::string note;
       long long at;
-      if (w.check(e.data(), t.data(), (int)e.size(), 60, 80, note, at)) {
+      if (w.check(e.data(), t.data(), (int)e.size(), 60, 80, 10, note, at)) {
         warnings++;
         lastNote = note;
         lastAt = at;
@@ -389,6 +390,50 @@ void temp_mixed_inside_does_not_warn() {
   TEST_ASSERT_EQUAL_INT(0, f.warnings);
 }
 
+void day_change_near_midnight_counts() {
+  addDay(DAY0, D0, [](int) { return 5.0f; });
+  addDay(DAY1, D1, [](int) { return 5.8f; }, 0, 101);  //the jump lands just after midnight
+  DayMetrics d = dayMetrics(buf, nbuf, D0, 10);
+  TEST_ASSERT_TRUE(d.ok);
+  TEST_ASSERT_FLOAT_WITHIN(0.01, 0.8, d.riseSize);  //a change starting late in the day is that day's
+  TEST_ASSERT_TRUE(d.riseMinute >= 1380 && d.riseMinute <= 1430);
+  TEST_ASSERT_FLOAT_WITHIN(0.001, 0.0, d.swing);  //the swing itself stays inside the day
+}
+
+void day_record_waits_until_0130() {
+  addDay(DAY0, D0, [](int) { return 5.0f; });
+  addDay(DAY1, D1, [](int) { return 5.0f; }, 0, 81);  //newest 01:20
+  TEST_ASSERT_EQUAL_INT(0, swingDayToRecord(buf, nbuf, 0));
+  addDay(DAY1, D1, [](int) { return 5.0f; }, 90, 91);  //01:30
+  TEST_ASSERT_EQUAL_INT(D0, swingDayToRecord(buf, nbuf, 0));
+  TEST_ASSERT_EQUAL_INT(0, swingDayToRecord(buf, nbuf, D0));  //already done
+  nbuf = 0;
+  addDay(DAY0, D0, [](int) { return 5.0f; }, 0, 1380);
+  addDay(DAY1, D1, [](int) { return 5.0f; }, 180, 181);  //off overnight, back at 03:00
+  TEST_ASSERT_EQUAL_INT(D0, swingDayToRecord(buf, nbuf, 0));
+}
+
+void temp_single_reading_after_gap_does_not_warn() {
+  TempFeed f;
+  f.add(13, 70);
+  f.gap = 3 * 3600;  //device off for 3 hours
+  f.add(1, 80.4f);
+  TEST_ASSERT_EQUAL_INT(0, f.warnings);
+  f.add(12, 80.4f);  //2 h of readings above
+  TEST_ASSERT_EQUAL_INT(1, f.warnings);
+  f.add(1, 70);
+  f.gap += 3 * 3600;
+  f.add(1, 70);      //one reading inside after a gap doesn't re-arm
+  f.add(13, 82);
+  TEST_ASSERT_EQUAL_INT(1, f.warnings);
+}
+
+void suggestion_limited_to_one_per_day() {
+  TEST_ASSERT_TRUE(swingSuggestionAllowed(DAY1, 0));
+  TEST_ASSERT_FALSE(swingSuggestionAllowed(DAY1, DAY1 - 86399));
+  TEST_ASSERT_TRUE(swingSuggestionAllowed(DAY1, DAY1 - 86400));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(day_swing_rise_fall_and_times);
@@ -413,5 +458,9 @@ int main() {
   RUN_TEST(swing_settings_parse_and_json);
   RUN_TEST(temp_warns_once_and_rearms);
   RUN_TEST(temp_mixed_inside_does_not_warn);
+  RUN_TEST(day_change_near_midnight_counts);
+  RUN_TEST(day_record_waits_until_0130);
+  RUN_TEST(temp_single_reading_after_gap_does_not_warn);
+  RUN_TEST(suggestion_limited_to_one_per_day);
   return UNITY_END();
 }

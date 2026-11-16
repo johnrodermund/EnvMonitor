@@ -132,7 +132,7 @@ inline DayMetrics dayMetrics(const SwingSample *s, int n, int day, int intervalM
     m.phMin = std::min(m.phMin, sm[i]);
     m.phMax = std::max(m.phMax, sm[i]);
     int j = swingHourLater(s, n, i, intervalMin);
-    if (j < 0 || j > last || std::isnan(sm[j])) {
+    if (j < 0 || std::isnan(sm[j])) {  //j may be after midnight: a change starting late in the day is the day's
       continue;
     }
     float change = sm[j] - sm[i];
@@ -168,6 +168,22 @@ inline DayMetrics dayMetrics(const SwingSample *s, int n, int day, int intervalM
   m.jitter = swingJitter(s, first, last + 1);
   m.ok = true;
   return m;
+}
+
+//The day whose swing record is due, or 0: the latest day before the newest reading's, once the newest reading is
+//at 01:30 or later (so changes starting before midnight have their hour), unless it is lastDay.
+const int SWING_DAY_DELAY_MIN = 90;
+
+inline int swingDayToRecord(const SwingSample *s, int n, int lastDay) {
+  if (n < 2 || s[n - 1].localMinute < SWING_DAY_DELAY_MIN) {
+    return 0;
+  }
+  for (int k = n - 2; k >= 0; k--) {
+    if (s[k].localDay != s[n - 1].localDay) {
+      return s[k].localDay != lastDay ? s[k].localDay : 0;
+    }
+  }
+  return 0;
 }
 
 //The epoch of minute `minute` on reading i's local day. Local minutes start on whole UTC minutes, so this doesn't
@@ -337,6 +353,11 @@ struct SwingSuggestion {
 };
 
 const int SWING_MIN_HISTORY = 5;
+const long long SWING_SUGGEST_GAP_S = 86400;  //at most one buffer/nutrients suggestion a day, rejected or not
+
+inline bool swingSuggestionAllowed(long long now, long long lastSuggestAt) {
+  return now - lastSuggestAt >= SWING_SUGGEST_GAP_S;
+}
 
 //Whether value is over factor x the median of past (with enough past values to judge); ratio is value / median
 inline bool swingAbove(const ValueHistory<14> &past, float value, float factor, float &ratio) {
@@ -509,19 +530,21 @@ const long long TEMP_REARM_S = 3600;  //...once, until every reading is back in 
 //Warns once per excursion of water temperature outside [lo, hi] (°F). The state is in RAM only.
 class TempWatch {
  public:
-  bool check(const long long *epochs, const float *tempF, int n, float lo, float hi, std::string &note,
-             long long &at) {
+  //intervalMin is the reading interval: a window needs 75 % of its expected readings (and at least 2)
+  bool check(const long long *epochs, const float *tempF, int n, float lo, float hi, int intervalMin,
+             std::string &note, long long &at) {
     if (n <= 0 || std::isnan(lo) || std::isnan(hi)) {
       return false;
     }
     long long newest = epochs[n - 1];
     if (!armed_) {
-      if (epochs[0] <= newest - TEMP_REARM_S && allSide(epochs, tempF, n, lo, hi, newest - TEMP_REARM_S) == 2) {
+      if (epochs[0] <= newest - TEMP_REARM_S && covered(epochs, tempF, n, newest - TEMP_REARM_S, intervalMin) &&
+          allSide(epochs, tempF, n, lo, hi, newest - TEMP_REARM_S) == 2) {
         armed_ = true;
       }
       return false;
     }
-    if (epochs[0] > newest - TEMP_WARN_S) {
+    if (epochs[0] > newest - TEMP_WARN_S || !covered(epochs, tempF, n, newest - TEMP_WARN_S, intervalMin)) {
       return false;
     }
     int side = allSide(epochs, tempF, n, lo, hi, newest - TEMP_WARN_S);
@@ -546,6 +569,14 @@ class TempWatch {
 
  private:
   bool armed_ = true;
+
+  static bool covered(const long long *epochs, const float *tempF, int n, long long from, int intervalMin) {
+    int count = 0;
+    for (int i = n - 1; i >= 0 && epochs[i] >= from; i--) {
+      count += !std::isnan(tempF[i]);
+    }
+    return count >= 2 && swingCovered(count, epochs[n - 1] - from, intervalMin);
+  }
 
   static int sideOf(float t, float lo, float hi) { return t > hi ? 1 : t < lo ? -1 : 0; }
 
