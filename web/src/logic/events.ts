@@ -4,11 +4,16 @@ const KIND_LABELS: Record<EventKind, string> = {
   topup: 'Top-up',
   feeding: 'Feeding',
   buffer: 'Buffer',
+  nutrients: 'Nutrients',
   water_change: 'Water change',
   other: 'Other',
+  ph_swing: 'pH swing',
 };
 
 export const EVENT_KINDS = Object.keys(KIND_LABELS) as EventKind[];
+
+/** Kinds the owner can log; pH swing records come only from the device. */
+export const LOGGABLE_KINDS = EVENT_KINDS.filter((k) => k !== 'ph_swing');
 
 export function kindLabel(kind: EventKind): string {
   return KIND_LABELS[kind] ?? kind;
@@ -41,10 +46,16 @@ export function eventDelta(e: TankEvent, metric: 'ec' | 'ph'): number | null {
   return before === null || after === null ? null : after - before;
 }
 
-/** color is a CSS custom property name; suggested (unreviewed) events are dashed. */
-export function markerStyle(e: TankEvent): { color: string; dashed: boolean } {
+/** color is a CSS custom property name; suggested (unreviewed) events are dashed. pH swings are thin, never dashed. */
+export function markerStyle(e: TankEvent): { color: string; dashed: boolean; thin: boolean } {
+  if (e.kind === 'ph_swing') return { color: '--event-swing', dashed: false, thin: true };
   const color = e.kind === 'topup' ? '--event-topup' : e.kind === 'feeding' ? '--event-feeding' : '--event-other';
-  return { color, dashed: e.status === 'suggested' };
+  return { color, dashed: e.status === 'suggested', thin: false };
+}
+
+/** Events marked on a chart: rejected ones are left out, and pH swings show on the pH chart only. */
+export function markersFor(events: TankEvent[], metric: 'ph' | 'ec'): TankEvent[] {
+  return events.filter((e) => e.status !== 'rejected' && (metric === 'ph' || e.kind !== 'ph_swing'));
 }
 
 export type RowAction = 'confirm_di' | 'confirm_tap' | 'confirm' | 'reject' | 'delete' | 'edit';

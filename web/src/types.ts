@@ -50,7 +50,7 @@ export interface EventsStatus {
   last_sync_http: Num;
 }
 
-export type EventKind = 'topup' | 'feeding' | 'buffer' | 'water_change' | 'other';
+export type EventKind = 'topup' | 'feeding' | 'buffer' | 'nutrients' | 'water_change' | 'other' | 'ph_swing';
 export type EventDetail = 'di' | 'tap' | 'unknown';
 export type EventStatus = 'suggested' | 'confirmed' | 'rejected';
 
@@ -103,6 +103,10 @@ export interface DeviceSettings {
   time_format?: string;
   chart_window?: string;
   tile_details?: boolean;
+  lights_on?: string;
+  lights_off?: string;
+  nutrients_ok_ec?: number;
+  swing_alert_factor?: number;
 }
 
 /** [time, ph, ec, water temp F], oldest first. */

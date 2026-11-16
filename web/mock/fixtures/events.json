@@ -1,6 +1,36 @@
 {
   "events": [
     {
+      "seq": 6,
+      "occurred_at": "2026-11-06T09:10:00Z",
+      "kind": "buffer",
+      "detail": null,
+      "source": "detected",
+      "status": "suggested",
+      "ec_before": null,
+      "ec_after": null,
+      "ph_before": 5.12,
+      "ph_after": 5.93,
+      "note": "pH jumped 0.81 at lights on, 1.6x usual. EC 281 is above 275, so nutrients look fine: add buffer or do a water change.",
+      "backed_up": false,
+      "refused": false
+    },
+    {
+      "seq": 5,
+      "occurred_at": "2026-11-05T13:43:00Z",
+      "kind": "ph_swing",
+      "detail": null,
+      "source": "detected",
+      "status": "confirmed",
+      "ec_before": null,
+      "ec_after": null,
+      "ph_before": 6.02,
+      "ph_after": 5.5,
+      "note": "Swing 1.38 (4.96-6.34). Fall -0.52 at 08:43, 1:43 after lights on. Rise +0.32 at 17:23, 1:37 before lights off. Jitter 0.014.",
+      "backed_up": true,
+      "refused": false
+    },
+    {
       "seq": 4,
       "occurred_at": "2026-11-06T07:10:00Z",
       "kind": "topup",

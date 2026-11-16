@@ -46,6 +46,10 @@ export function Settings() {
   const [topupDrop, setTopupDrop] = useState('');
   const [feedingRise, setFeedingRise] = useState('');
   const [feedingOn, setFeedingOn] = useState(false);
+  const [lightsOn, setLightsOn] = useState('07:00');
+  const [lightsOff, setLightsOff] = useState('19:00');
+  const [okEc, setOkEc] = useState('275');
+  const [swingFactor, setSwingFactor] = useState('1.5');
   const [ecCoef, setEcCoef] = useState('');
 
   const note = (k: string, err: string | null, ok?: string) => {
@@ -82,6 +86,10 @@ export function Settings() {
         if (s.feeding_min_rise !== undefined) setFeedingRise(String(s.feeding_min_rise));
         setFeedingOn(!!s.feeding_enabled);
         if (s.ec_temp_coef !== undefined) setEcCoef(String(s.ec_temp_coef));
+        if (s.lights_on !== undefined) setLightsOn(s.lights_on);
+        if (s.lights_off !== undefined) setLightsOff(s.lights_off);
+        if (s.nutrients_ok_ec !== undefined) setOkEc(String(s.nutrients_ok_ec));
+        if (s.swing_alert_factor !== undefined) setSwingFactor(String(s.swing_alert_factor));
       },
       () => {},
     );
@@ -128,6 +136,20 @@ export function Settings() {
     const ok = (v: number, t: string) => t.trim() !== '' && Number.isFinite(v) && v >= 0.5 && v <= 100;
     if (!ok(drop, topupDrop) || !ok(rise, feedingRise)) return note('detect', 'Enter numbers from 0.5 to 100');
     return run('detect', () => saveSettings({ topup_min_drop: drop, feeding_min_rise: rise, feeding_enabled: feedingOn }));
+  };
+  const saveSwing = () => {
+    const clockOk = (t: string) => /^([01]\d|2[0-3]):[0-5]\d$/.test(t);
+    if (!clockOk(lightsOn) || !clockOk(lightsOff)) return note('swing', 'Enter light times as HH:MM');
+    if (lightsOn === lightsOff) return note('swing', 'Lights on and off must differ');
+    const ec = Number(okEc);
+    const factor = Number(swingFactor);
+    if (okEc.trim() === '' || !Number.isFinite(ec) || ec < 0 || ec > 5000) return note('swing', 'Enter an EC from 0 to 5000');
+    if (swingFactor.trim() === '' || !Number.isFinite(factor) || factor < 1.1 || factor > 5) {
+      return note('swing', 'Enter an alert factor from 1.1 to 5');
+    }
+    return run('swing', () =>
+      saveSettings({ lights_on: lightsOn, lights_off: lightsOff, nutrients_ok_ec: ec, swing_alert_factor: factor }),
+    );
   };
   const saveDeviceRanges = () => {
     const parsed = parseRangesForm(rText);
@@ -250,6 +272,40 @@ export function Settings() {
           </button>
         </div>
         {field('detect')}
+      </section>
+
+      <section class="panel">
+        <h2>pH swings</h2>
+        <p class="muted small">
+          Each day the device records the pH swing as an event. About 2 hours after each light change it compares the pH jump
+          with this tank's usual and suggests buffer or nutrients when it's well above. Needs a reading interval of 13 minutes or
+          less.
+        </p>
+        <label>
+          Lights on
+          <input type="time" value={lightsOn} onInput={(e) => setLightsOn(val(e))} />
+        </label>
+        <label>
+          Lights off
+          <input type="time" value={lightsOff} onInput={(e) => setLightsOff(val(e))} />
+        </label>
+        <p class="muted small">Update when the light timer changes photoperiod.</p>
+        <label>
+          Nutrients OK above EC (µS/cm)
+          <input type="text" inputMode="decimal" value={okEc} onInput={(e) => setOkEc(val(e))} />
+        </label>
+        <p class="muted small">EC as shown. Above it a big swing means buffer (or a water change), below it nutrients.</p>
+        <label>
+          Alert factor
+          <input type="text" inputMode="decimal" value={swingFactor} onInput={(e) => setSwingFactor(val(e))} />
+        </label>
+        <p class="muted small">1.5 = 50 % above this tank's usual.</p>
+        <div class="actions">
+          <button class="primary" onClick={saveSwing}>
+            Save
+          </button>
+        </div>
+        {field('swing')}
       </section>
 
       <section class="panel">

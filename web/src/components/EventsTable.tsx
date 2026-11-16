@@ -1,6 +1,6 @@
 import { useContext, useState } from 'preact/hooks';
 import { ApiError, postEvent } from '../api';
-import { EVENT_KINDS, eventDelta, eventLabel, fromLocalInput, kindLabel, markerStyle, rowActions, toLocalInput } from '../logic/events';
+import { EVENT_KINDS, LOGGABLE_KINDS, eventDelta, eventLabel, fromLocalInput, kindLabel, markerStyle, rowActions, toLocalInput } from '../logic/events';
 import { fmt, reportLocalTime } from '../logic/format';
 import type { EventChange, EventDetail, EventKind, TankEvent } from '../types';
 import { AppearanceContext } from '../appearance-context';
@@ -64,7 +64,7 @@ function EventDialog({ original, onClose, onSaved }: { original?: TankEvent; onC
         <label>
           Kind
           <select value={d.kind} onChange={(e) => setD({ ...d, kind: val(e) as EventKind })}>
-            {EVENT_KINDS.map((k) => (
+            {(d.kind === 'ph_swing' ? EVENT_KINDS : LOGGABLE_KINDS).map((k) => (
               <option key={k} value={k}>
                 {kindLabel(k)}
               </option>
