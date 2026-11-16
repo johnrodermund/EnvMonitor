@@ -1,4 +1,4 @@
-import type { CommandName, PiResponse, Ranges, RangesResponse, Row, StatusJson } from './types';
+import type { CommandName, DeviceSettings, EventChange, EventsResponse, PiResponse, Ranges, RangesResponse, Row, StatusJson } from './types';
 
 export class ApiError extends Error {
   status: number;
@@ -61,13 +61,31 @@ export const getStatus = () => get<StatusJson>('/api/status');
 export const getReadings = () => get<Row[]>('/api/readings');
 export const getPi = () => get<PiResponse>('/api/pi');
 export const getRanges = () => get<RangesResponse>('/api/ranges');
-export const getSettings = () => get<{ interval_min: number; title: string }>('/api/settings');
+export const getSettings = () => get<DeviceSettings>('/api/settings');
+export const getEvents = () => get<EventsResponse>('/api/events');
+
+/** Creates, edits, confirms, rejects or deletes an event; resolves to its seq. */
+export const postEvent = async (change: EventChange): Promise<number> => {
+  const f: Record<string, string> = {};
+  for (const [k, v] of Object.entries(change)) if (v !== undefined) f[k] = String(v);
+  const body = (await call('POST', '/api/events', f)) as { seq?: number } | null;
+  return body?.seq ?? 0;
+};
 export const getApiConfig = () => get<{ url: string; device: string; token_set: boolean }>('/api/apiconfig');
 
-export const saveSettings = (p: { interval?: number; title?: string }) => {
+export const saveSettings = (p: {
+  interval?: number;
+  title?: string;
+  topup_min_drop?: number;
+  feeding_min_rise?: number;
+  feeding_enabled?: boolean;
+}) => {
   const f: Record<string, string> = {};
   if (p.interval !== undefined) f.interval = String(p.interval);
   if (p.title !== undefined) f.title = p.title;
+  if (p.topup_min_drop !== undefined) f.topup_min_drop = String(p.topup_min_drop);
+  if (p.feeding_min_rise !== undefined) f.feeding_min_rise = String(p.feeding_min_rise);
+  if (p.feeding_enabled !== undefined) f.feeding_enabled = String(p.feeding_enabled);
   return post('/api/settings', f);
 };
 
