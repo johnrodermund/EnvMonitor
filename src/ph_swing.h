@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <string>
 #include <vector>
 
 #include "event_detect.h"
@@ -30,6 +33,7 @@ struct DayMetrics {
   float swing, phMin, phMax, riseSize, fallSize, jitter;  //fallSize is negative
   long long riseAt, fallAt, bigAt;
   float bigBefore, bigAfter;  //the larger of the rise and the fall
+  int riseMinute, fallMinute;  //local minute each starts
 };
 
 struct ChangeJudgement {
@@ -149,6 +153,8 @@ inline DayMetrics dayMetrics(const SwingSample *s, int n, int day, int intervalM
   m.swing = m.phMax - m.phMin;
   m.riseAt = riseI >= 0 ? s[riseI].epoch : 0;
   m.fallAt = fallI >= 0 ? s[fallI].epoch : 0;
+  m.riseMinute = riseI >= 0 ? s[riseI].localMinute : 0;
+  m.fallMinute = fallI >= 0 ? s[fallI].localMinute : 0;
   bool riseBigger = m.riseSize >= -m.fallSize;
   int bi = riseBigger ? riseI : fallI, bj = riseBigger ? riseJ : fallJ;
   if (bi >= 0) {
@@ -236,3 +242,327 @@ inline ChangeJudgement judgeLatestChange(const SwingSample *s, int n, const Ligh
   j.ok = true;
   return j;
 }
+
+//The last N values (NAN ignored), oldest first
+template <int N>
+class ValueHistory {
+ public:
+  void add(float v) {
+    if (std::isnan(v)) {
+      return;
+    }
+    values_.push_back(v);
+    if ((int)values_.size() > N) {
+      values_.erase(values_.begin());
+    }
+  }
+  int size() const { return (int)values_.size(); }
+  float median() const { return medianMany(values_); }
+  const std::vector<float> &values() const { return values_; }
+  void clear() { values_.clear(); }
+
+ private:
+  std::vector<float> values_;
+};
+
+//Past light-change jumps and jitter, saved in NVS as "on:v,v;off:v,v;jit:v,v"
+struct SwingHistory {
+  ValueHistory<14> onJumps, offJumps, jitter;
+
+  std::string saveText() const {
+    std::string out;
+    const char *names[] = {"on", "off", "jit"};
+    const ValueHistory<14> *parts[] = {&onJumps, &offJumps, &jitter};
+    for (int p = 0; p < 3; p++) {
+      out += std::string(p ? ";" : "") + names[p] + ":";
+      for (size_t i = 0; i < parts[p]->values().size(); i++) {
+        char num[16];
+        snprintf(num, sizeof num, "%s%.4f", i ? "," : "", parts[p]->values()[i]);
+        out += num;
+      }
+    }
+    return out;
+  }
+
+  //Replaces the history; "" means nothing saved yet. On garbage it returns false and leaves the history empty.
+  bool loadText(const std::string &text) {
+    onJumps.clear();
+    offJumps.clear();
+    jitter.clear();
+    if (text.empty()) {
+      return true;
+    }
+    const char *names[] = {"on:", "off:", "jit:"};
+    ValueHistory<14> *parts[] = {&onJumps, &offJumps, &jitter};
+    size_t pos = 0;
+    for (int p = 0; p < 3; p++) {
+      size_t end = text.find(';', pos);
+      std::string part = text.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+      std::string name = names[p];
+      if (part.compare(0, name.size(), name) != 0 || (p < 2 && end == std::string::npos) ||
+          (p == 2 && end != std::string::npos)) {
+        loadText("");
+        return false;
+      }
+      std::string list = part.substr(name.size());
+      size_t at = 0;
+      while (at < list.size()) {
+        size_t comma = list.find(',', at);
+        std::string token = list.substr(at, comma == std::string::npos ? std::string::npos : comma - at);
+        char *stop;
+        float v = strtof(token.c_str(), &stop);
+        if (token.empty() || *stop) {
+          loadText("");
+          return false;
+        }
+        parts[p]->add(v);
+        at = comma == std::string::npos ? list.size() : comma + 1;
+      }
+      pos = end + 1;
+    }
+    return true;
+  }
+};
+
+struct SwingLimits {
+  float nutrientsOkEc = 275;
+  float alertFactor = 1.5f;
+};
+
+struct SwingSuggestion {
+  bool found = false;
+  std::string kind;
+  std::string note;
+  long long at = 0;
+};
+
+const int SWING_MIN_HISTORY = 5;
+
+//Whether value is over factor x the median of past (with enough past values to judge); ratio is value / median
+inline bool swingAbove(const ValueHistory<14> &past, float value, float factor, float &ratio) {
+  if (past.size() < SWING_MIN_HISTORY) {
+    return false;
+  }
+  float median = past.median();
+  if (!(median > 0) || std::isnan(value)) {
+    return false;
+  }
+  ratio = value / median;
+  return value > factor * median;
+}
+
+//Compares a judged change with the history before it (the caller records it afterwards with recordJudgement)
+inline SwingSuggestion judgeSuggestion(const ChangeJudgement &j, const SwingHistory &before, const SwingLimits &lim) {
+  SwingSuggestion out;
+  if (!j.ok) {
+    return out;
+  }
+  float jumpRatio = 0, jitterRatio = 0;
+  bool jump = swingAbove(j.lightsOn ? before.onJumps : before.offJumps, j.jump, lim.alertFactor, jumpRatio);
+  bool erratic = swingAbove(before.jitter, j.jitter, lim.alertFactor, jitterRatio);
+  if (!jump && !erratic) {
+    return out;
+  }
+  char what[96];
+  if (jump) {
+    snprintf(what, sizeof what, "pH jumped %.2f at lights %s, %.1fx usual.", j.jump, j.lightsOn ? "on" : "off",
+             jumpRatio);
+  } else {
+    snprintf(what, sizeof what, "pH is erratic: jitter %.3f, %.1fx usual.", j.jitter, jitterRatio);
+  }
+  char fix[112];
+  if (j.ecMedian > lim.nutrientsOkEc) {
+    out.kind = "buffer";
+    snprintf(fix, sizeof fix, " EC %.0f is above %.0f, so nutrients look fine: add buffer or do a water change.",
+             j.ecMedian, lim.nutrientsOkEc);
+  } else {
+    out.kind = "nutrients";
+    if (std::isnan(j.ecMedian)) {
+      snprintf(fix, sizeof fix, " EC unknown: add nutrients, buffer, or do a water change.");
+    } else {
+      snprintf(fix, sizeof fix, " EC %.0f is below %.0f: add nutrients, buffer, or do a water change.", j.ecMedian,
+               lim.nutrientsOkEc);
+    }
+  }
+  out.found = true;
+  out.note = std::string(what) + fix;
+  out.at = j.jumpAt;
+  return out;
+}
+
+//Adds a judged change's values to the history, whether or not it triggered
+inline void recordJudgement(SwingHistory &h, const ChangeJudgement &j) {
+  if (!j.ok) {
+    return;
+  }
+  (j.lightsOn ? h.onJumps : h.offJumps).add(j.jump);
+  h.jitter.add(j.jitter);
+}
+
+inline std::string swingClock(int minute) {
+  char text[8];
+  snprintf(text, sizeof text, "%02d:%02d", minute / 60, minute % 60);
+  return text;
+}
+
+//"1:43 after lights on": the offset from local minute t to the nearest light change
+inline std::string swingOffset(int t, const LightSchedule &l) {
+  auto wrap = [](int d) { return ((d + 720) % 1440 + 1440) % 1440 - 720; };
+  int dOn = wrap(t - l.onMinute), dOff = wrap(t - l.offMinute);
+  bool on = std::abs(dOn) <= std::abs(dOff);
+  int d = on ? dOn : dOff;
+  const char *which = on ? "lights on" : "lights off";
+  if (d == 0) {
+    return std::string("at ") + which;
+  }
+  char text[40];
+  snprintf(text, sizeof text, "%d:%02d %s %s", std::abs(d) / 60, std::abs(d) % 60, d > 0 ? "after" : "before", which);
+  return text;
+}
+
+//The daily record's note, e.g. "Swing 1.38 (4.96-6.34). Fall -0.52 at 08:43, 1:43 after lights on. ..."
+inline std::string swingNote(const DayMetrics &m, const LightSchedule &l) {
+  char text[64];
+  snprintf(text, sizeof text, "Swing %.2f (%.2f-%.2f).", m.swing, m.phMin, m.phMax);
+  std::string out = text;
+  if (m.fallAt) {
+    snprintf(text, sizeof text, " Fall %.2f at ", m.fallSize);
+    out += text + swingClock(m.fallMinute) + ", " + swingOffset(m.fallMinute, l) + ".";
+  }
+  if (m.riseAt) {
+    snprintf(text, sizeof text, " Rise +%.2f at ", m.riseSize);
+    out += text + swingClock(m.riseMinute) + ", " + swingOffset(m.riseMinute, l) + ".";
+  }
+  snprintf(text, sizeof text, " Jitter %.3f.", m.jitter);
+  return out + text;
+}
+
+//"HH:MM" to a minute of the day
+inline bool parseSwingClock(const std::string &text, int &minute) {
+  if (text.size() != 5 || text[2] != ':') {
+    return false;
+  }
+  for (int i : {0, 1, 3, 4}) {
+    if (text[i] < '0' || text[i] > '9') {
+      return false;
+    }
+  }
+  int h = (text[0] - '0') * 10 + text[1] - '0', m = (text[3] - '0') * 10 + text[4] - '0';
+  if (h > 23 || m > 59) {
+    return false;
+  }
+  minute = h * 60 + m;
+  return true;
+}
+
+inline bool parseSwingNumber(const std::string &text, float lo, float hi, float &out) {
+  char *end;
+  float v = strtof(text.c_str(), &end);
+  if (text.empty() || *end || !(v >= lo && v <= hi)) {
+    return false;
+  }
+  out = v;
+  return true;
+}
+
+//Applies the given swing settings (empty means "not given"), or none of them on an error
+inline bool applySwingSettings(const std::string &on, const std::string &off, const std::string &okEc,
+                               const std::string &factor, LightSchedule &l, SwingLimits &lim, std::string &error) {
+  LightSchedule nl = l;
+  SwingLimits nlim = lim;
+  if (!on.empty() && !parseSwingClock(on, nl.onMinute)) {
+    error = "lights_on must be HH:MM";
+    return false;
+  }
+  if (!off.empty() && !parseSwingClock(off, nl.offMinute)) {
+    error = "lights_off must be HH:MM";
+    return false;
+  }
+  if (nl.onMinute == nl.offMinute) {
+    error = "lights_on and lights_off must differ";
+    return false;
+  }
+  if (!okEc.empty() && !parseSwingNumber(okEc, 0, 5000, nlim.nutrientsOkEc)) {
+    error = "nutrients_ok_ec must be a number from 0 to 5000";
+    return false;
+  }
+  if (!factor.empty() && !parseSwingNumber(factor, 1.1f, 5, nlim.alertFactor)) {
+    error = "swing_alert_factor must be a number from 1.1 to 5";
+    return false;
+  }
+  l = nl;
+  lim = nlim;
+  return true;
+}
+
+inline std::string swingSettingsJsonFields(const LightSchedule &l, const SwingLimits &lim) {
+  char text[128];
+  snprintf(text, sizeof text,
+           ",\"lights_on\":\"%s\",\"lights_off\":\"%s\",\"nutrients_ok_ec\":%.3f,\"swing_alert_factor\":%.3f",
+           swingClock(l.onMinute).c_str(), swingClock(l.offMinute).c_str(), lim.nutrientsOkEc, lim.alertFactor);
+  return text;
+}
+
+const long long TEMP_WARN_S = 7200;   //every reading out of range for 2 h warns...
+const long long TEMP_REARM_S = 3600;  //...once, until every reading is back in range for 1 h
+
+//Warns once per excursion of water temperature outside [lo, hi] (°F). The state is in RAM only.
+class TempWatch {
+ public:
+  bool check(const long long *epochs, const float *tempF, int n, float lo, float hi, std::string &note,
+             long long &at) {
+    if (n <= 0 || std::isnan(lo) || std::isnan(hi)) {
+      return false;
+    }
+    long long newest = epochs[n - 1];
+    if (!armed_) {
+      if (epochs[0] <= newest - TEMP_REARM_S && allSide(epochs, tempF, n, lo, hi, newest - TEMP_REARM_S) == 2) {
+        armed_ = true;
+      }
+      return false;
+    }
+    if (epochs[0] > newest - TEMP_WARN_S) {
+      return false;
+    }
+    int side = allSide(epochs, tempF, n, lo, hi, newest - TEMP_WARN_S);
+    if (side != 1 && side != -1) {
+      return false;
+    }
+    int start = n - 1;
+    while (start > 0 && (std::isnan(tempF[start - 1]) || sideOf(tempF[start - 1], lo, hi) == side)) {
+      start--;
+    }
+    while (std::isnan(tempF[start])) {
+      start++;
+    }
+    char text[128];
+    snprintf(text, sizeof text, "Water %.1f \xC2\xB0" "F has been %s target (%.0f \xC2\xB0" "F) for 2 h: check the heater.",
+             tempF[n - 1], side > 0 ? "above" : "below", side > 0 ? hi : lo);
+    note = text;
+    at = epochs[start];
+    armed_ = false;
+    return true;
+  }
+
+ private:
+  bool armed_ = true;
+
+  static int sideOf(float t, float lo, float hi) { return t > hi ? 1 : t < lo ? -1 : 0; }
+
+  //1 or -1 when every reading since `from` is above or below the range, 2 when every one is inside, else 0
+  static int allSide(const long long *epochs, const float *tempF, int n, float lo, float hi, long long from) {
+    int side = 3;
+    for (int i = n - 1; i >= 0 && epochs[i] >= from; i--) {
+      if (std::isnan(tempF[i])) {
+        continue;
+      }
+      int s = sideOf(tempF[i], lo, hi);
+      s = s == 0 ? 2 : s;
+      if (side != 3 && s != side) {
+        return 0;
+      }
+      side = s;
+    }
+    return side == 3 ? 0 : side;
+  }
+};
