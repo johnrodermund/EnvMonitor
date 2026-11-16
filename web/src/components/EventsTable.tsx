@@ -151,7 +151,7 @@ export function EventsTable({
       {!events ? (
         <p class="muted small">{error ? `Could not load events: ${error}` : 'Loading…'}</p>
       ) : events.length === 0 ? (
-        <p class="muted small">No events yet. Top-ups are detected about an hour after they happen.</p>
+        <p class="muted small">No events yet. Top-ups are detected about 1.5 hours after they happen.</p>
       ) : (
         <ul class="events">
           {events.map((e) => (
