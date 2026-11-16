@@ -20,6 +20,7 @@ import {
   validateRangesForm,
   validateTitle,
 } from '../logic/rangesForm';
+import { validateEcTempCoef } from '../logic/format';
 import { BUILTIN_RANGES } from '../logic/status';
 import { StatusContext } from '../status-context';
 import type { RangesResponse } from '../types';
@@ -45,6 +46,7 @@ export function Settings() {
   const [topupDrop, setTopupDrop] = useState('');
   const [feedingRise, setFeedingRise] = useState('');
   const [feedingOn, setFeedingOn] = useState(false);
+  const [ecCoef, setEcCoef] = useState('');
 
   const note = (k: string, err: string | null, ok?: string) => {
     setErrs((p) => ({ ...p, [k]: err }));
@@ -79,6 +81,7 @@ export function Settings() {
         if (s.topup_min_drop !== undefined) setTopupDrop(String(s.topup_min_drop));
         if (s.feeding_min_rise !== undefined) setFeedingRise(String(s.feeding_min_rise));
         setFeedingOn(!!s.feeding_enabled);
+        if (s.ec_temp_coef !== undefined) setEcCoef(String(s.ec_temp_coef));
       },
       () => {},
     );
@@ -108,6 +111,14 @@ export function Settings() {
     if (e) return note('title', e);
     return run('title', async () => {
       await saveSettings({ title });
+      refresh();
+    });
+  };
+  const saveEcCoef = () => {
+    const e = validateEcTempCoef(ecCoef);
+    if (e) return note('ecCoef', e);
+    return run('ecCoef', async () => {
+      await saveSettings({ ec_temp_coef: Number(ecCoef) });
       refresh();
     });
   };
@@ -197,6 +208,25 @@ export function Settings() {
           </button>
         </div>
         {field('title')}
+      </section>
+
+      <section class="panel">
+        <h2>EC temperature compensation</h2>
+        <p class="muted small">
+          EC is shown at 25 °C: EC₂₅ = EC ÷ (1 + coefficient × (water °C − 25)). Changing it re-applies to all readings on the device;
+          readings already sent to the Pi keep the value they had. 0 shows raw EC. Run <code>tools/ec_temp_coef.py</code> on the Pi's
+          data to suggest a value for your tank.
+        </p>
+        <div class="row">
+          <label>
+            Coefficient (% per °C, 0–5)
+            <input type="text" inputMode="decimal" value={ecCoef} onInput={(e) => setEcCoef(val(e))} />
+          </label>
+          <button class="primary" onClick={saveEcCoef}>
+            Save
+          </button>
+        </div>
+        {field('ecCoef')}
       </section>
 
       <section class="panel">

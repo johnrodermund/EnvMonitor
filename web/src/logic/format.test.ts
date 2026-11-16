@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { fmt, ago, slope, localTime } from './format';
+import { fmt, ago, slope, localTime, ecUnit, validateEcTempCoef } from './format';
 
 describe('format', () => {
   it('fmt', () => {
@@ -20,5 +20,20 @@ describe('format', () => {
   it('localTime', () => {
     expect(localTime('2026-11-04T16:33:06')).toBe('2026-11-04 16:33');
     expect(localTime(null)).toBe('—');
+  });
+  it('ecUnit says when EC is referred to 25 C', () => {
+    expect(ecUnit(2)).toBe('µS/cm at 25 °C');
+    expect(ecUnit(0)).toBe('µS/cm');
+    expect(ecUnit(null)).toBe('µS/cm');
+    expect(ecUnit(undefined)).toBe('µS/cm');
+  });
+  it('validateEcTempCoef takes 0 to 5', () => {
+    expect(validateEcTempCoef('1.67')).toBeNull();
+    expect(validateEcTempCoef('0')).toBeNull();
+    expect(validateEcTempCoef('5')).toBeNull();
+    expect(validateEcTempCoef('5.1')).toBe('Enter a number from 0 to 5');
+    expect(validateEcTempCoef('-1')).toBe('Enter a number from 0 to 5');
+    expect(validateEcTempCoef('')).toBe('Enter a number from 0 to 5');
+    expect(validateEcTempCoef('x')).toBe('Enter a number from 0 to 5');
   });
 });

@@ -27,6 +27,8 @@ export interface StatusJson {
   interval_min: Num;
   uptime_s: Num;
   free_heap: Num;
+  /** % per °C; EC values are referred to 25 °C when not 0. Absent on older firmware. */
+  ec_temp_coef?: Num;
   count: Num;
   last_reading: LastReading | null;
   averages: { ph: MeanStd; ec: MeanStd; wt: MeanStd };
@@ -93,6 +95,7 @@ export interface DeviceSettings {
   topup_min_drop?: number;
   feeding_min_rise?: number;
   feeding_enabled?: boolean;
+  ec_temp_coef?: number;
 }
 
 /** [time, ph, ec, water temp F], oldest first. */

@@ -2,6 +2,7 @@
   "title": "Reservoir",
   "interval_min": 10,
   "uptime_s": 93784,
+  "ec_temp_coef": 2,
   "free_heap": 142336,
   "count": 200,
   "last_reading": {

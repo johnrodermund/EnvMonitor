@@ -28,7 +28,7 @@ const STATUS: Record<string, Json> = {
 };
 
 let settings = {
-  interval_min: 10, title: 'Reservoir', topup_min_drop: 3, feeding_min_rise: 5, feeding_enabled: false,
+  interval_min: 10, title: 'Reservoir', topup_min_drop: 3, feeding_min_rise: 5, feeding_enabled: false, ec_temp_coef: 2,
 };
 
 // Stateful copy of the events fixture, changed by POST /api/events the way the device does it
@@ -197,6 +197,7 @@ export function mockApi(): Plugin {
               if (form.get('topup_min_drop')) settings.topup_min_drop = Number(form.get('topup_min_drop'));
               if (form.get('feeding_min_rise')) settings.feeding_min_rise = Number(form.get('feeding_min_rise'));
               if (form.get('feeding_enabled')) settings.feeding_enabled = form.get('feeding_enabled') === 'true';
+              if (form.get('ec_temp_coef')) settings.ec_temp_coef = Number(form.get('ec_temp_coef'));
               return send(200, { ok: true });
             }
             if (path === '/api/events') {

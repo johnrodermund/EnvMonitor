@@ -1,3 +1,4 @@
+import { ecUnit } from '../logic/format';
 import { Progress } from '../components/Progress';
 import { useWizard } from './useWizard';
 
@@ -35,7 +36,7 @@ export function Measure() {
         <>
           <div class="cards">
             <div class="card"><div class="card-label">pH</div><div class="card-value">{num(data.manual.ph, 2)}</div></div>
-            <div class="card"><div class="card-label">EC <span class="unit">µS/cm</span></div><div class="card-value">{num(data.manual.ec, 0)}</div></div>
+            <div class="card"><div class="card-label">EC <span class="unit">{ecUnit(data.ec_temp_coef)}</span></div><div class="card-value">{num(data.manual.ec, 0)}</div></div>
             <div class="card"><div class="card-label">Temperature <span class="unit">°F</span></div><div class="card-value">{num(data.manual.wt, 1)}</div></div>
           </div>
           <div class="actions">
