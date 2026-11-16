@@ -103,6 +103,9 @@ bool hasPendingDetect = false;
 const float defaultEcTempCoef = 2.0f;
 float ecTempCoef = defaultEcTempCoef;
 bool hasPendingEcCoef = false;
+// Web app look (theme, accent, text size, units...), guarded by settingsLock, saved to NVS "ui" by loop()
+Appearance appearance;
+bool hasPendingAppearance = false;
 
 //Saved API settings as handlers see them; defined up here because the .ino prototypes need it
 struct SavedApiConfig {
@@ -636,10 +639,12 @@ bool savePendingSettings() {
   bool saveInterval = hasPendingInterval && !saveTitle;
   bool saveDetect = hasPendingDetect && !saveTitle && !saveInterval;
   bool saveEcCoef = hasPendingEcCoef && !saveTitle && !saveInterval && !saveDetect;
+  bool saveAppearance = hasPendingAppearance && !saveTitle && !saveInterval && !saveDetect && !saveEcCoef;
   String newTitle = pendingTitle;
   unsigned long newInterval = pendingInterval;
   DetectLimits newLimits = detectLimits;
   float newEcCoef = ecTempCoef;
+  std::string appearanceText = appearanceSaveText(appearance);
   if (saveTitle) {
     hasPendingTitle = false;
   } else if (saveInterval) {
@@ -648,6 +653,8 @@ bool savePendingSettings() {
     hasPendingDetect = false;
   } else if (saveEcCoef) {
     hasPendingEcCoef = false;
+  } else if (saveAppearance) {
+    hasPendingAppearance = false;
   }
   xSemaphoreGive(settingsLock);
   if (saveTitle) {
@@ -662,8 +669,24 @@ bool savePendingSettings() {
     sensorPrefs.begin("sensor", false);
     sensorPrefs.putFloat("ec_coef", newEcCoef);
     sensorPrefs.end();
+  } else if (saveAppearance) {
+    Preferences uiPrefs;
+    uiPrefs.begin("ui", false);
+    uiPrefs.putString("appearance", appearanceText.c_str());
+    uiPrefs.end();
   }
-  return saveInterval || saveTitle || saveDetect || saveEcCoef;
+  return saveInterval || saveTitle || saveDetect || saveEcCoef || saveAppearance;
+}
+
+//Called at boot only; defaults for anything not saved
+Appearance loadAppearance() {
+  Appearance loaded;
+  Preferences uiPrefs;
+  if (uiPrefs.begin("ui", true)) {
+    appearanceLoadText(uiPrefs.getString("appearance", "").c_str(), loaded);
+    uiPrefs.end();
+  }
+  return loaded;
 }
 
 //Called at boot only; the default when nothing was saved or the saved value is out of range
@@ -899,7 +922,7 @@ void registerApiRoutes() {
 
   server.on("/api/settings", HTTP_GET, [](AsyncWebServerRequest *request) {
     xSemaphoreTake(settingsLock, portMAX_DELAY);
-    std::string json = settingsJson(interval0 / 60000, title.c_str(), detectLimits, ecTempCoef);
+    std::string json = settingsJson(interval0 / 60000, title.c_str(), detectLimits, ecTempCoef, appearance);
     xSemaphoreGive(settingsLock);
     sendJson(request, 200, json);
   });
@@ -914,8 +937,17 @@ void registerApiRoutes() {
     bool hasBasic = interval.length() || newTitle.length();
     bool hasDetect = topupMinDrop.length() || feedingMinRise.length() || feedingEnabled.length();
     bool hasEcCoef = ecCoefText.length() > 0;
+    AppearanceForm look;
+    look.theme = formValue(request, "theme").c_str();
+    look.accent = formValue(request, "accent").c_str();
+    look.textSize = formValue(request, "text_size").c_str();
+    look.tempUnit = formValue(request, "temp_unit").c_str();
+    look.timeFormat = formValue(request, "time_format").c_str();
+    look.chartWindow = formValue(request, "chart_window").c_str();
+    look.tileDetails = formValue(request, "tile_details").c_str();
+    bool hasAppearance = look.any();
     std::string error;
-    if (!hasBasic && !hasDetect && !hasEcCoef) {
+    if (!hasBasic && !hasDetect && !hasEcCoef && !hasAppearance) {
       sendError(request, 400, "nothing to save");
       return;
     }
@@ -931,8 +963,10 @@ void registerApiRoutes() {
     //Live values change now so the next GET shows them; loop() persists them
     xSemaphoreTake(settingsLock, portMAX_DELAY);
     DetectLimits limits = detectLimits;
-    bool valid = !hasDetect || applyDetectSettings(topupMinDrop.c_str(), feedingMinRise.c_str(),
-                                                   feedingEnabled.c_str(), limits, error);
+    Appearance newAppearance = appearance;
+    bool valid = (!hasDetect || applyDetectSettings(topupMinDrop.c_str(), feedingMinRise.c_str(),
+                                                    feedingEnabled.c_str(), limits, error)) &&
+                 (!hasAppearance || applyAppearanceForm(look, newAppearance, error));
     if (valid) {
       if (interval.length()) {
         interval0 = interval.toInt() * 60000UL;
@@ -951,6 +985,10 @@ void registerApiRoutes() {
       if (hasEcCoef) {
         ecTempCoef = newEcCoef;
         hasPendingEcCoef = true;
+      }
+      if (hasAppearance) {
+        appearance = newAppearance;
+        hasPendingAppearance = true;
       }
     }
     xSemaphoreGive(settingsLock);
@@ -1148,6 +1186,7 @@ void setup() {
   hasDeviceRanges = loadDeviceRanges(deviceRanges);
   detectLimits = loadDetectLimits();
   ecTempCoef = loadEcTempCoef();
+  appearance = loadAppearance();
   Serial.begin(115200);
 
   Serial.println("Starting the LittleFS Webserver..");

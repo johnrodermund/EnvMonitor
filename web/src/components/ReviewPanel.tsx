@@ -1,6 +1,8 @@
 import type { PiEntry, PiReportBody } from '../types';
 import { reviewLine } from '../logic/dashboard';
 import { reportLocalTime } from '../logic/format';
+import { useContext } from 'preact/hooks';
+import { AppearanceContext } from '../appearance-context';
 
 export function sourceText(r: PiReportBody): string {
   if (r.source === 'model' && r.model) {
@@ -10,6 +12,7 @@ export function sourceText(r: PiReportBody): string {
 }
 
 export function ReviewPanel({ report }: { report: PiEntry<PiReportBody> | null }) {
+  const { appearance } = useContext(AppearanceContext);
   const line = reviewLine(report, Date.now());
   const r = report?.body ?? null;
   return (
@@ -32,7 +35,7 @@ export function ReviewPanel({ report }: { report: PiEntry<PiReportBody> | null }
             </ul>
           )}
           <div class="muted small">
-            {reportLocalTime(r.created_at)} · {sourceText(r)}
+            {reportLocalTime(r.created_at, appearance.time_format)} · {sourceText(r)}
           </div>
         </>
       )}

@@ -1,22 +1,28 @@
 import type { ComponentType } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
-import { getStatus } from './api';
+import { getSettings, getStatus } from './api';
+import { AppearanceContext } from './appearance-context';
+import { DEFAULT_APPEARANCE, appearanceFrom, applyToRoot, cacheAppearance, cachedAppearance, type Appearance } from './logic/appearance';
 import { StatusContext } from './status-context';
 import { usePoll } from './usePoll';
+import { AppearanceScreen } from './screens/Appearance';
 import { Calibrate } from './screens/Calibrate';
 import { Charts } from './screens/Charts';
 import { Dashboard } from './screens/Dashboard';
 import { Diagnostics } from './screens/Diagnostics';
+import { Events } from './screens/Events';
 import { Measure } from './screens/Measure';
 import { Settings } from './screens/Settings';
 
 const ROUTES: { path: string; label: string; view: ComponentType }[] = [
   { path: '/', label: 'Dashboard', view: Dashboard },
   { path: '/charts', label: 'Charts', view: Charts },
+  { path: '/events', label: 'Events', view: Events },
   { path: '/measure', label: 'Measure', view: Measure },
   { path: '/calibrate', label: 'Calibrate', view: Calibrate },
   { path: '/settings', label: 'Settings', view: Settings },
-  { path: '/diag', label: 'Diag', view: Diagnostics },
+  { path: '/appearance', label: 'Appearance', view: AppearanceScreen },
+  { path: '/diag', label: 'Diagnostics', view: Diagnostics },
 ];
 
 function currentPath(): string {
@@ -31,6 +37,23 @@ export function App() {
     window.addEventListener('hashchange', on);
     return () => window.removeEventListener('hashchange', on);
   }, []);
+  // On a phone the nav is one scrolling row; keep the open tab in view
+  useEffect(() => {
+    document.querySelector('.nav a.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [path]);
+
+  // The device's copy wins; the browser's cached copy only avoids a flash of the default look
+  const [appearance, setAppearance] = useState<Appearance>(() => cachedAppearance() ?? DEFAULT_APPEARANCE);
+  useEffect(() => {
+    getSettings().then(
+      (s) => setAppearance(appearanceFrom(s as unknown as Record<string, unknown>)),
+      () => {},
+    );
+  }, []);
+  useEffect(() => {
+    applyToRoot(appearance);
+    cacheAppearance(appearance);
+  }, [appearance]);
 
   const [fast, setFast] = useState(false);
   const status = usePoll(getStatus, fast ? 2000 : 15000);
@@ -39,24 +62,26 @@ export function App() {
 
   const View = (ROUTES.find((r) => r.path === path) ?? ROUTES[0]).view;
   return (
-    <StatusContext.Provider value={status}>
-      <div class="shell">
-        <nav class="nav" aria-label="Main">
-          {ROUTES.map((r) => (
-            <a key={r.path} href={`#${r.path}`} class={r.path === path ? 'active' : ''} aria-current={r.path === path ? 'page' : undefined}>
-              {r.label}
-            </a>
-          ))}
-        </nav>
-        <main class="main">
-          {status.error && (
-            <div class="banner" role="alert">
-              Device not responding, retrying
-            </div>
-          )}
-          <View />
-        </main>
-      </div>
-    </StatusContext.Provider>
+    <AppearanceContext.Provider value={{ appearance, setAppearance }}>
+      <StatusContext.Provider value={status}>
+        <div class="shell">
+          <nav class="nav" aria-label="Main">
+            {ROUTES.map((r) => (
+              <a key={r.path} href={`#${r.path}`} class={r.path === path ? 'active' : ''} aria-current={r.path === path ? 'page' : undefined}>
+                {r.label}
+              </a>
+            ))}
+          </nav>
+          <main class="main">
+            {status.error && (
+              <div class="banner" role="alert">
+                Device not responding, retrying
+              </div>
+            )}
+            <View />
+          </main>
+        </div>
+      </StatusContext.Provider>
+    </AppearanceContext.Provider>
   );
 }

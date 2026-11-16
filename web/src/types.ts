@@ -96,6 +96,13 @@ export interface DeviceSettings {
   feeding_min_rise?: number;
   feeding_enabled?: boolean;
   ec_temp_coef?: number;
+  theme?: string;
+  accent?: string;
+  text_size?: string;
+  temp_unit?: string;
+  time_format?: string;
+  chart_window?: string;
+  tile_details?: boolean;
 }
 
 /** [time, ph, ec, water temp F], oldest first. */

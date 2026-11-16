@@ -1,8 +1,9 @@
-import { useState } from 'preact/hooks';
+import { useContext, useState } from 'preact/hooks';
 import { ApiError, postEvent } from '../api';
 import { EVENT_KINDS, eventDelta, eventLabel, fromLocalInput, kindLabel, markerStyle, rowActions, toLocalInput } from '../logic/events';
 import { fmt, reportLocalTime } from '../logic/format';
 import type { EventChange, EventDetail, EventKind, TankEvent } from '../types';
+import { AppearanceContext } from '../appearance-context';
 
 const why = (e: unknown) => (e instanceof ApiError ? e.message : 'Request failed');
 const val = (e: Event) => (e.target as HTMLInputElement).value;
@@ -116,6 +117,7 @@ export function EventsTable({
   error: string | null;
   onChanged: () => void;
 }) {
+  const { appearance } = useContext(AppearanceContext);
   const [editing, setEditing] = useState<TankEvent | null>(null);
   const [logging, setLogging] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -157,7 +159,7 @@ export function EventsTable({
               <div class="event-line">
                 <span class="event-swatch" style={{ borderColor: `var(${markerStyle(e).color})` }} />
                 <strong>{eventLabel(e)}</strong>
-                <span class="muted">{reportLocalTime(e.occurred_at)}</span>
+                <span class="muted">{reportLocalTime(e.occurred_at, appearance.time_format)}</span>
                 <span class={`badge ev-${e.status}`}>{e.status}</span>
                 {e.refused ? (
                   <span class="err small">refused by the Pi</span>

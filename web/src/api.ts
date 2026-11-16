@@ -80,6 +80,13 @@ export const saveSettings = (p: {
   feeding_min_rise?: number;
   feeding_enabled?: boolean;
   ec_temp_coef?: number;
+  theme?: string;
+  accent?: string;
+  text_size?: string;
+  temp_unit?: string;
+  time_format?: string;
+  chart_window?: string;
+  tile_details?: string;
 }) => {
   const f: Record<string, string> = {};
   if (p.interval !== undefined) f.interval = String(p.interval);
@@ -88,6 +95,10 @@ export const saveSettings = (p: {
   if (p.feeding_min_rise !== undefined) f.feeding_min_rise = String(p.feeding_min_rise);
   if (p.feeding_enabled !== undefined) f.feeding_enabled = String(p.feeding_enabled);
   if (p.ec_temp_coef !== undefined) f.ec_temp_coef = String(p.ec_temp_coef);
+  for (const k of ['theme', 'accent', 'text_size', 'temp_unit', 'time_format', 'chart_window', 'tile_details'] as const) {
+    const v = p[k];
+    if (v !== undefined) f[k] = v;
+  }
   return post('/api/settings', f);
 };
 

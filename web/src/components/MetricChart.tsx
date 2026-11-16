@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'preact/hooks';
 import { eventSeconds, markerStyle } from '../logic/events';
 import { isZoomed, nextDataMode } from '../logic/window';
 import type { TankEvent } from '../types';
+import { clock } from '../logic/format';
 
 export interface MetricChartProps {
   title: string;
@@ -14,6 +15,7 @@ export interface MetricChartProps {
   target: [number, number];
   /** Drawn as vertical markers; suggested ones dashed. Never changes the scales. */
   events?: TankEvent[];
+  timeFormat?: '24' | '12';
 }
 
 const HEIGHT = 190;
@@ -24,6 +26,14 @@ function css(name: string): string {
 
 function outsideOf(values: (number | null)[], [lo, hi]: [number, number]): (number | null)[] {
   return values.map((v) => (v !== null && (v < lo || v > hi) ? v : null));
+}
+
+//Midnight shows the date, any other tick the time of day
+function axisTime(seconds: number, format: '24' | '12'): string {
+  const d = new Date(seconds * 1000);
+  if (d.getHours() === 0 && d.getMinutes() === 0) return `${d.getMonth() + 1}/${d.getDate()}`;
+  if (format === '12' && d.getMinutes() === 0) return `${d.getHours() % 12 || 12} ${d.getHours() < 12 ? 'AM' : 'PM'}`;
+  return clock(d, format);
 }
 
 function drawEvents(u: uPlot, events: TankEvent[] | undefined) {
@@ -85,7 +95,7 @@ function build(el: HTMLElement, latest: { current: MetricChartProps }, width: nu
         },
       },
     },
-    axes: [axis, { ...axis, size: 56, label: p.unit ? `${p.title} (${p.unit})` : p.title, labelSize: 18 }],
+    axes: [{ ...axis, space: p.timeFormat === '12' ? 64 : 50, values: (_u: uPlot, splits: number[]) => splits.map((s) => axisTime(s, p.timeFormat ?? '24')) }, { ...axis, size: 56, label: p.unit ? `${p.title} (${p.unit})` : p.title, labelSize: 18 }],
     series: [
       { label: 'Time' },
       { label: p.title, stroke: accent, width: 2, points: { show: false }, value: fmtV },

@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include "appearance.h"
 #include "event_detect.h"
 #include "json_text.h"
 #include "reading_log.h"
@@ -169,11 +170,12 @@ inline std::string statusJson(const StatusView &s) {
   return j + "}";
 }
 
-inline std::string settingsJson(int intervalMin, const std::string &title, const DetectLimits &limits, float ecTempCoef) {
+inline std::string settingsJson(int intervalMin, const std::string &title, const DetectLimits &limits, float ecTempCoef,
+                                const Appearance &appearance) {
   return "{\"interval_min\":" + std::to_string(intervalMin) + ",\"title\":" + jsonString(title) +
          ",\"topup_min_drop\":" + jsonNumber(limits.topupMinDrop) +
          ",\"feeding_min_rise\":" + jsonNumber(limits.feedingMinRise) +
-         ",\"feeding_enabled\":" + jsonBool(limits.feedingEnabled) + ",\"ec_temp_coef\":" + jsonNumber(ecTempCoef) + "}";
+         ",\"feeding_enabled\":" + jsonBool(limits.feedingEnabled) + ",\"ec_temp_coef\":" + jsonNumber(ecTempCoef) + appearanceJsonFields(appearance) + "}";
 }
 
 //An empty value means "not provided"

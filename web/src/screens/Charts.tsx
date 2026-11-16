@@ -1,6 +1,5 @@
 import { useContext, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { getEvents, getRanges, getReadings } from '../api';
-import { EventsTable } from '../components/EventsTable';
 import { MetricChart } from '../components/MetricChart';
 import { toCsv } from '../logic/csv';
 import { ecUnit } from '../logic/format';
@@ -9,6 +8,8 @@ import { rowSeconds, windowRows } from '../logic/window';
 import { StatusContext } from '../status-context';
 import { usePoll } from '../usePoll';
 import type { Row } from '../types';
+import { AppearanceContext } from '../appearance-context';
+import { chartHours, displayTemp, tempUnitLabel } from '../logic/appearance';
 
 const WINDOWS: { label: string; hours: number | null }[] = [
   { label: '6 h', hours: 6 },
@@ -29,7 +30,14 @@ export function Charts() {
   const readings = usePoll(getReadings, 600000);
   const rangesPoll = usePoll(getRanges, 60000);
   const eventsPoll = usePoll(getEvents, 60000);
-  const [hours, setHours] = useState<number | null>(24);
+  const { appearance } = useContext(AppearanceContext);
+  const [hours, setHours] = useState<number | null>(chartHours(appearance.chart_window));
+  // The device's appearance can arrive after the page opens; follow it until the owner picks a window here
+  const picked = useRef(false);
+  useEffect(() => {
+    if (!picked.current) setHours(chartHours(appearance.chart_window));
+  }, [appearance.chart_window]);
+  const unit = appearance.temp_unit;
 
   const count = status?.count ?? null;
   const lastTime = status?.last_reading?.time ?? null;
@@ -49,17 +57,14 @@ export function Charts() {
   const times = useMemo(() => rows.map((r) => rowSeconds(r[0]) as number), [rows]);
   const ph = useMemo(() => column(rows, 1), [rows]);
   const ec = useMemo(() => column(rows, 2), [rows]);
-  const wt = useMemo(() => column(rows, 3), [rows]);
+  const wt = useMemo(() => column(rows, 3).map((v) => displayTemp(v, unit)), [rows, unit]);
+  const tempTarget = useMemo(
+    () => ranges.temp.target.map((v) => displayTemp(v, unit) as number) as [number, number],
+    [ranges.temp.target[0], ranges.temp.target[1], unit],
+  );
   // Rejected events are kept in the table but not marked on the charts
   const markers = useMemo(() => (eventsPoll.data?.events ?? []).filter((e) => e.status !== 'rejected'), [eventsPoll.data]);
-  const eventsTable = (
-    <EventsTable
-      events={eventsPoll.data?.events ?? null}
-      truncated={eventsPoll.data?.truncated}
-      error={eventsPoll.error?.message ?? null}
-      onChanged={eventsPoll.refresh}
-    />
-  );
+
 
   const download = () => {
     const blob = new Blob([toCsv(all ?? [])], { type: 'text/csv' });
@@ -78,7 +83,6 @@ export function Charts() {
       <div>
         <h1>Charts</h1>
         <p class="muted">{readings.error ? 'Could not load readings' : 'Loading…'}</p>
-        {eventsTable}
       </div>
     );
   }
@@ -92,7 +96,10 @@ export function Charts() {
         <>
           <div class="actions chart-bar">
             {WINDOWS.map((w) => (
-              <button key={w.label} class={hours === w.hours ? 'primary' : ''} aria-pressed={hours === w.hours} onClick={() => setHours(w.hours)}>
+              <button key={w.label} class={hours === w.hours ? 'primary' : ''} aria-pressed={hours === w.hours} onClick={() => {
+                picked.current = true;
+                setHours(w.hours);
+              }}>
                 {w.label}
               </button>
             ))}
@@ -103,14 +110,16 @@ export function Charts() {
             Shaded band is the target range; dots outside it are marked. Vertical lines are events (dashed: not yet reviewed). Drag to zoom,
             double-click to reset.
           </p>
-          <div class="chart-wrap" key={String(hours)}>
-            <MetricChart title="pH" unit="" digits={2} times={times} values={ph} target={ranges.ph.target} events={markers} />
-            <MetricChart title="EC" unit={ecUnit(status?.ec_temp_coef)} digits={0} times={times} values={ec} target={ranges.ec.target} events={markers} />
-            <MetricChart title="Temp" unit="°F" digits={1} times={times} values={wt} target={ranges.temp.target} />
+          <p class="muted small">
+            Events are listed on the <a href="#/events">Events</a> tab.
+          </p>
+          <div class="chart-wrap" key={`${hours}-${appearance.theme}-${appearance.accent}-${appearance.time_format}-${unit}`}>
+            <MetricChart title="pH" unit="" digits={2} times={times} values={ph} target={ranges.ph.target} events={markers} timeFormat={appearance.time_format} />
+            <MetricChart title="EC" unit={ecUnit(status?.ec_temp_coef)} digits={0} times={times} values={ec} target={ranges.ec.target} events={markers} timeFormat={appearance.time_format} />
+            <MetricChart title="Temp" unit={tempUnitLabel(unit)} digits={1} times={times} values={wt} target={tempTarget} timeFormat={appearance.time_format} />
           </div>
         </>
       )}
-      {eventsTable}
     </div>
   );
 }
