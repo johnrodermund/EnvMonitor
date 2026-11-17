@@ -420,8 +420,18 @@ struct LightShiftHistory {
   }
 };
 
+//Medians of the 7 older and 3 newer offsets. Offsets are minutes on a 24-hour circle, so each is first moved by
+//whole days to lie within 12 hours of the oldest: times either side of the -720/+720 wrap stay together.
 inline void shiftMedians(const ValueHistory<SHIFT_DAYS> &h, float &before, float &recent) {
-  const std::vector<float> &v = h.values();
+  std::vector<float> v = h.values();
+  for (float &x : v) {
+    while (x - v[0] > 720) {
+      x -= 1440;
+    }
+    while (x - v[0] < -720) {
+      x += 1440;
+    }
+  }
   before = medianMany(std::vector<float>(v.begin(), v.end() - SHIFT_RECENT));
   recent = medianMany(std::vector<float>(v.end() - SHIFT_RECENT, v.end()));
 }
@@ -439,14 +449,19 @@ inline bool judgeLightShift(const LightShiftHistory &h, const LightSchedule &l, 
   if (std::fabs(dFall) < SHIFT_MIN_MINUTES || std::fabs(dLow) < SHIFT_MIN_MINUTES || (dFall > 0) != (dLow > 0)) {
     return false;
   }
-  auto clockAt = [&](float offset) { return swingClock((((l.onMinute + (int)std::lround(offset)) % 1440) + 1440) % 1440); };
+  auto minuteAt = [&](float offset) { return (((l.onMinute + (int)std::lround(offset)) % 1440) + 1440) % 1440; };
+  auto clockAt = [&](float offset) { return swingClock(minuteAt(offset)); };
+  //Name the light change nearest the usual fall time
+  int usual = minuteAt(fallBefore);
+  auto distance = [&](int m) { int d = std::abs(usual - m) % 1440; return std::min(d, 1440 - d); };
+  bool nearOn = distance(l.onMinute) <= distance(l.offMinute);
   int move = (int)std::lround(std::fabs(dFall));
   char text[224];
   snprintf(text, sizeof text,
-           "pH has been falling about %d:%02d %s than usual for 3 days (around %s instead of %s). Lights on is still "
+           "pH has been falling about %d:%02d %s than usual for 3 days (around %s instead of %s). Lights %s is still "
            "set to %s. Did the lights get adjusted? If so, update the light times in Settings.",
            move / 60, move % 60, dFall < 0 ? "earlier" : "later", clockAt(fallRecent).c_str(),
-           clockAt(fallBefore).c_str(), swingClock(l.onMinute).c_str());
+           clockAt(fallBefore).c_str(), nearOn ? "on" : "off", swingClock(nearOn ? l.onMinute : l.offMinute).c_str());
   note = text;
   return true;
 }

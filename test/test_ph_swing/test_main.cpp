@@ -537,6 +537,26 @@ void shift_history_round_trip() {
   TEST_ASSERT_EQUAL_INT(0, h.fallOffsets.size());
 }
 
+void shift_handles_times_near_the_wraparound() {
+  //Lights on 20:00, off 08:00: the morning fall sits about 12 hours from lights on, on both sides of the wrap
+  LightSchedule l;
+  l.onMinute = 1200;
+  l.offMinute = 480;
+  LightShiftHistory h;
+  for (int i = 0; i < 7; i++) {
+    h.add(timedDay(i % 2 ? 470 : 490, 660), l);  //fall 07:50 or 08:10, low 11:00
+  }
+  for (int i = 0; i < 3; i++) {
+    h.add(timedDay(390, 560), l);  //fall 06:30, low 09:20
+  }
+  std::string note;
+  TEST_ASSERT_TRUE(judgeLightShift(h, l, note));
+  TEST_ASSERT_EQUAL_STRING(
+      "pH has been falling about 1:40 earlier than usual for 3 days (around 06:30 instead of 08:10). Lights off is "
+      "still set to 08:00. Did the lights get adjusted? If so, update the light times in Settings.",
+      note.c_str());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(day_swing_rise_fall_and_times);
@@ -571,5 +591,6 @@ int main() {
   RUN_TEST(shift_ignores_noise_and_one_marker);
   RUN_TEST(shift_follows_the_light_setting);
   RUN_TEST(shift_history_round_trip);
+  RUN_TEST(shift_handles_times_near_the_wraparound);
   return UNITY_END();
 }

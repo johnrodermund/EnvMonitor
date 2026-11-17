@@ -290,9 +290,9 @@ export function Settings() {
           <input type="time" value={lightsOff} onInput={(e) => setLightsOff(val(e))} />
         </label>
         <p class="muted small">
-          In a planted tank the lights drive the daily pH swing: plants and CO₂ change at each light change, so pH moves
-          with it. Keep these times matching your timer, or swings and suggestions are judged at the wrong times. If pH
-          starts falling at a different time for 3 days, the device asks whether the lights were adjusted.
+          pH readings are never adjusted for the lights. These times only label the daily swing (how long after a light
+          change it rose or fell) and time the light-change checks, so keep them matching your timer. If pH starts
+          falling at a different time for 3 days, the device asks whether the lights were adjusted.
         </p>
         <label>
           Nutrients OK above EC (µS/cm)

@@ -77,10 +77,11 @@ The owner also wants a daily record of the pH swing, to see whether the swings a
 
 ### Light-timer shift check (added after the first flash, owner's request)
 
-- The settings panel says why the light times matter: in a planted tank the lights drive the daily pH swing.
-- Each daily record also keeps when the day's biggest 1-hour fall started and when its low was, as minutes from the lights-on setting. In this tank both follow lights on (fall mostly 0:40–2:40 after it, low 10:00–13:00); the daily high is too scattered to use.
+- The settings panel says what the light times are for: pH readings are never adjusted for the lights; the times only label the daily swing and time the light-change checks (owner: "I just want to track the swings").
+- Each daily record also keeps when the day's biggest 1-hour fall started and when its low was, as minutes from the lights-on setting. In this tank (lights on 20:00, off 08:00) both follow lights off (fall mostly 0:40–2:40 after it, low 10:00–13:00); the daily high is too scattered to use.
 - With 10 days kept, when the median of the last 3 has moved 60 minutes or more from the 7 before, for both times and the same way, the device adds a suggested `other` event: `pH has been falling about 1:20 earlier than usual for 3 days (around 07:50 instead of 09:10). Lights on is still set to 08:00. Did the lights get adjusted? If so, update the light times in Settings.`
 - The history then starts over, so it asks at most once every 10 days. Changing the light setting also clears it, since the times are kept against the setting.
+- Offsets are minutes on a 24-hour circle, unwrapped around the oldest value before taking medians, so a fall near 12 hours from lights on doesn't split across the wrap. The note names the light change nearest the usual fall time.
 - Limits: shifts under about an hour are lost in the day-to-day spread (about ±1 h), and a change that only moves lights off isn't seen.
 
 ### Temperature warning
