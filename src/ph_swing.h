@@ -34,6 +34,7 @@ struct DayMetrics {
   long long riseAt, fallAt, bigAt;
   float bigBefore, bigAfter;  //the larger of the rise and the fall
   int riseMinute, fallMinute;  //local minute each starts
+  int lowMinute;               //local minute of the smoothed low
 };
 
 struct ChangeJudgement {
@@ -129,7 +130,10 @@ inline DayMetrics dayMetrics(const SwingSample *s, int n, int day, int intervalM
     if (std::isnan(sm[i])) {
       continue;
     }
-    m.phMin = std::min(m.phMin, sm[i]);
+    if (sm[i] < m.phMin) {
+      m.phMin = sm[i];
+      m.lowMinute = s[i].localMinute;
+    }
     m.phMax = std::max(m.phMax, sm[i]);
     int j = swingHourLater(s, n, i, intervalMin);
     if (j < 0 || std::isnan(sm[j])) {  //j may be after midnight: a change starting late in the day is the day's
@@ -339,6 +343,113 @@ struct SwingHistory {
     return true;
   }
 };
+
+//Values as "v,v,v" (4 decimals), and back; parse returns false on garbage
+template <int N>
+std::string valuesText(const ValueHistory<N> &h) {
+  std::string out;
+  for (size_t i = 0; i < h.values().size(); i++) {
+    char num[16];
+    snprintf(num, sizeof num, "%s%.4f", i ? "," : "", h.values()[i]);
+    out += num;
+  }
+  return out;
+}
+
+template <int N>
+bool parseValues(const std::string &list, ValueHistory<N> &h) {
+  size_t at = 0;
+  while (at < list.size()) {
+    size_t comma = list.find(',', at);
+    std::string token = list.substr(at, comma == std::string::npos ? std::string::npos : comma - at);
+    char *stop;
+    float v = strtof(token.c_str(), &stop);
+    if (token.empty() || *stop) {
+      return false;
+    }
+    h.add(v);
+    at = comma == std::string::npos ? list.size() : comma + 1;
+  }
+  return true;
+}
+
+inline std::string swingClock(int minute);  //"HH:MM", defined below
+
+//Minutes from the lights-on setting, -720 to 719
+inline int minutesFromLightsOn(int minute, const LightSchedule &l) {
+  return ((minute - l.onMinute + 720) % 1440 + 1440) % 1440 - 720;
+}
+
+const int SHIFT_DAYS = 10;        //7 days of baseline, then 3 recent days
+const int SHIFT_RECENT = 3;
+const float SHIFT_MIN_MINUTES = 60;
+
+//When each day's biggest pH fall started and when its low was, as minutes from the lights-on setting at the time.
+//A lasting move of both, with the setting unchanged, suggests the light timer changed. Saved in NVS "shift" as
+//"fall:v,v;low:v,v". Changing the light setting clears it, and so does a warning (the baseline starts over).
+struct LightShiftHistory {
+  ValueHistory<SHIFT_DAYS> fallOffsets, lowOffsets;
+
+  void add(const DayMetrics &m, const LightSchedule &l) {
+    if (!m.ok || !m.fallAt) {
+      return;
+    }
+    fallOffsets.add(minutesFromLightsOn(m.fallMinute, l));
+    lowOffsets.add(minutesFromLightsOn(m.lowMinute, l));
+  }
+
+  void clear() {
+    fallOffsets.clear();
+    lowOffsets.clear();
+  }
+
+  std::string saveText() const { return "fall:" + valuesText(fallOffsets) + ";low:" + valuesText(lowOffsets); }
+
+  bool loadText(const std::string &text) {
+    clear();
+    if (text.empty()) {
+      return true;
+    }
+    size_t semi = text.find(';');
+    if (text.compare(0, 5, "fall:") != 0 || semi == std::string::npos || text.compare(semi, 5, ";low:") != 0 ||
+        !parseValues(text.substr(5, semi - 5), fallOffsets) || !parseValues(text.substr(semi + 5), lowOffsets)) {
+      clear();
+      return false;
+    }
+    return true;
+  }
+};
+
+inline void shiftMedians(const ValueHistory<SHIFT_DAYS> &h, float &before, float &recent) {
+  const std::vector<float> &v = h.values();
+  before = medianMany(std::vector<float>(v.begin(), v.end() - SHIFT_RECENT));
+  recent = medianMany(std::vector<float>(v.end() - SHIFT_RECENT, v.end()));
+}
+
+//True, with the note asking whether the lights were adjusted, when the last 3 days' fall and low both moved 60
+//minutes or more the same way from the 7 days before
+inline bool judgeLightShift(const LightShiftHistory &h, const LightSchedule &l, std::string &note) {
+  if (h.fallOffsets.size() < SHIFT_DAYS || h.lowOffsets.size() < SHIFT_DAYS) {
+    return false;
+  }
+  float fallBefore, fallRecent, lowBefore, lowRecent;
+  shiftMedians(h.fallOffsets, fallBefore, fallRecent);
+  shiftMedians(h.lowOffsets, lowBefore, lowRecent);
+  float dFall = fallRecent - fallBefore, dLow = lowRecent - lowBefore;
+  if (std::fabs(dFall) < SHIFT_MIN_MINUTES || std::fabs(dLow) < SHIFT_MIN_MINUTES || (dFall > 0) != (dLow > 0)) {
+    return false;
+  }
+  auto clockAt = [&](float offset) { return swingClock((((l.onMinute + (int)std::lround(offset)) % 1440) + 1440) % 1440); };
+  int move = (int)std::lround(std::fabs(dFall));
+  char text[224];
+  snprintf(text, sizeof text,
+           "pH has been falling about %d:%02d %s than usual for 3 days (around %s instead of %s). Lights on is still "
+           "set to %s. Did the lights get adjusted? If so, update the light times in Settings.",
+           move / 60, move % 60, dFall < 0 ? "earlier" : "later", clockAt(fallRecent).c_str(),
+           clockAt(fallBefore).c_str(), swingClock(l.onMinute).c_str());
+  note = text;
+  return true;
+}
 
 struct SwingLimits {
   float nutrientsOkEc = 275;

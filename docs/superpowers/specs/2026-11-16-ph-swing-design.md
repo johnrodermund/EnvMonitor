@@ -75,6 +75,14 @@ The owner also wants a daily record of the pH swing, to see whether the swings a
 - **Quiet period:** no suggestion when a `buffer`, `nutrients` or `water_change` event (any status except rejected) lies within the past 2 days. So there's at most one suggestion every 2 days, even though there are two judgements a day.
 - **EC scale:** the reading log keeps raw EC, and the device applies the current temperature coefficient whenever it reads it. So the comparison with `nutrients_ok_ec` is always on the scale the app shows. *(Answered by the existing design.)*
 
+### Light-timer shift check (added after the first flash, owner's request)
+
+- The settings panel says why the light times matter: in a planted tank the lights drive the daily pH swing.
+- Each daily record also keeps when the day's biggest 1-hour fall started and when its low was, as minutes from the lights-on setting. In this tank both follow lights on (fall mostly 0:40–2:40 after it, low 10:00–13:00); the daily high is too scattered to use.
+- With 10 days kept, when the median of the last 3 has moved 60 minutes or more from the 7 before, for both times and the same way, the device adds a suggested `other` event: `pH has been falling about 1:20 earlier than usual for 3 days (around 07:50 instead of 09:10). Lights on is still set to 08:00. Did the lights get adjusted? If so, update the light times in Settings.`
+- The history then starts over, so it asks at most once every 10 days. Changing the light setting also clears it, since the times are kept against the setting.
+- Limits: shifts under about an hour are lost in the day-to-day spread (about ±1 h), and a change that only moves lights off isn't seen.
+
 ### Temperature warning
 
 - When every reading for the last 2 hours is outside the active target range for temperature, on either side, add one suggested event. The range is the one the Dashboard uses (device, Pi or built-in, all in °F, as the log is). The event is: kind `other`, note like `Water 82.1 °F has been above target (80 °F) for 2 h: check the heater.`

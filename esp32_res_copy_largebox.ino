@@ -114,6 +114,8 @@ SwingHistory swingHistory;
 int lastSwingDay = 0;        //yyyymmdd of the last day whose swing record was made (or skipped)
 long long lastChangeAt = 0;  //UTC seconds of the last light change judged (or skipped)
 long long lastSuggestAt = 0; //UTC seconds of the last buffer/nutrients suggestion added: at most one a day
+LightShiftHistory lightShift;  //daily pH timing against the lights-on setting, for "did the lights get adjusted?"
+unsigned lightsGen = 0;        //counts light-setting changes, which clear lightShift (RAM only)
 bool hasPendingSwing = false;
 
 //Saved API settings as handlers see them; defined up here because the .ino prototypes need it
@@ -284,19 +286,29 @@ void detectSwings(long long now, int n) {
   int lastDay = lastSwingDay;
   long long lastChange = lastChangeAt;
   long long lastSuggest = lastSuggestAt;
+  LightShiftHistory shift = lightShift;
+  unsigned gen = lightsGen;
   int intervalMin = interval0 / 60000;
   xSemaphoreGive(settingsLock);
   bool stateChanged = false;
 
   //From 01:30, the day just ended (skipped under 75 % coverage)
   DayMetrics day{};
-  std::string dayNote;
+  std::string dayNote, lightShiftNote;
   int previousDay = swingDayToRecord(swingSamples, n, lastDay);
   if (previousDay) {
     day = dayMetrics(swingSamples, n, previousDay, intervalMin);
+    std::string shiftNote;
     if (day.ok) {
       dayNote = swingNote(day, lights);
+      shift.add(day, lights);
+      if (judgeLightShift(shift, lights, shiftNote)) {
+        shift.clear();  //the baseline starts over, so it asks again 10 days later at the soonest
+      } else {
+        shiftNote.clear();
+      }
     }
+    lightShiftNote = shiftNote;
     lastDay = previousDay;
     stateChanged = true;
   }
@@ -341,6 +353,9 @@ void detectSwings(long long now, int n) {
   if (tempWarning) {
     changed = events.addDetected("other", "suggested", tempAt, tempNote, NAN, NAN, now) || changed;
   }
+  if (!lightShiftNote.empty()) {
+    changed = events.addDetected("other", "suggested", day.fallAt, lightShiftNote, NAN, NAN, now) || changed;
+  }
   if (changed) {
     eventsSavePending = true;
   }
@@ -352,6 +367,9 @@ void detectSwings(long long now, int n) {
     lastSwingDay = lastDay;
     lastChangeAt = lastChange;
     lastSuggestAt = lastSuggest;
+    if (lightsGen == gen) {
+      lightShift = shift;  //unless the light setting changed meanwhile, which cleared it
+    }
     hasPendingSwing = true;
     xSemaphoreGive(settingsLock);
   }
@@ -758,6 +776,7 @@ bool savePendingSettings() {
   int newLastDay = lastSwingDay;
   long long newLastChange = lastChangeAt;
   long long newLastSuggest = lastSuggestAt;
+  std::string shiftText = saveSwing ? lightShift.saveText() : "";
   String newTitle = pendingTitle;
   unsigned long newInterval = pendingInterval;
   DetectLimits newLimits = detectLimits;
@@ -804,6 +823,7 @@ bool savePendingSettings() {
     swingPrefs.putInt("last_day", newLastDay);
     swingPrefs.putLong64("last_chg", newLastChange);
     swingPrefs.putLong64("last_sug", newLastSuggest);
+    swingPrefs.putString("shift", shiftText.c_str());
     swingPrefs.end();
   }
   return saveInterval || saveTitle || saveDetect || saveEcCoef || saveAppearance || saveSwing;
@@ -833,6 +853,7 @@ void loadSwingState() {
   lastSwingDay = swingPrefs.getInt("last_day", 0);
   lastChangeAt = swingPrefs.getLong64("last_chg", 0);
   lastSuggestAt = swingPrefs.getLong64("last_sug", 0);
+  lightShift.loadText(swingPrefs.getString("shift", "").c_str());
   swingPrefs.end();
 }
 
@@ -1166,6 +1187,10 @@ void registerApiRoutes() {
         hasPendingAppearance = true;
       }
       if (hasSwing) {
+        if (newLights.onMinute != lightSchedule.onMinute || newLights.offMinute != lightSchedule.offMinute) {
+          lightShift.clear();  //times are kept against the setting, so a new setting needs a new baseline
+          lightsGen++;
+        }
         lightSchedule = newLights;
         swingLimits = newSwingLimits;
         hasPendingSwing = true;

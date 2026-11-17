@@ -434,6 +434,109 @@ void suggestion_limited_to_one_per_day() {
   TEST_ASSERT_TRUE(swingSuggestionAllowed(DAY1, DAY1 - 86400));
 }
 
+void day_low_minute_is_recorded() {
+  addDay(DAY0, D0, [](int m) { return (m >= 600 && m <= 620) ? 4.0f : 5.0f; });
+  DayMetrics d = dayMetrics(buf, nbuf, D0, 10);
+  TEST_ASSERT_TRUE(d.ok);
+  TEST_ASSERT_TRUE(d.lowMinute >= 600 && d.lowMinute <= 620);
+}
+
+//A day whose biggest fall starts at fallMinute and whose low is at lowMinute
+DayMetrics timedDay(int fallMinute, int lowMinute) {
+  DayMetrics m{};
+  m.ok = true;
+  m.fallAt = 1;
+  m.fallMinute = fallMinute;
+  m.lowMinute = lowMinute;
+  return m;
+}
+
+LightSchedule lights8to20() {
+  LightSchedule l;
+  l.onMinute = 480;
+  l.offMinute = 1200;
+  return l;
+}
+
+void shift_needs_ten_days() {
+  LightShiftHistory h;
+  for (int i = 0; i < 7; i++) {
+    h.add(timedDay(550, 660), lights8to20());
+  }
+  for (int i = 0; i < 2; i++) {
+    h.add(timedDay(470, 580), lights8to20());
+  }
+  std::string note;
+  TEST_ASSERT_FALSE(judgeLightShift(h, lights8to20(), note));  //9 days
+}
+
+void shift_detects_earlier_lights_on() {
+  LightShiftHistory h;
+  for (int i = 0; i < 7; i++) {
+    h.add(timedDay(550, 660), lights8to20());  //fall 09:10, low 11:00
+  }
+  for (int i = 0; i < 3; i++) {
+    h.add(timedDay(470, 580), lights8to20());  //fall 07:50, low 09:40
+  }
+  std::string note;
+  TEST_ASSERT_TRUE(judgeLightShift(h, lights8to20(), note));
+  TEST_ASSERT_EQUAL_STRING(
+      "pH has been falling about 1:20 earlier than usual for 3 days (around 07:50 instead of 09:10). Lights on is "
+      "still set to 08:00. Did the lights get adjusted? If so, update the light times in Settings.",
+      note.c_str());
+  TEST_ASSERT_TRUE(chars(note) <= 200);
+}
+
+void shift_ignores_noise_and_one_marker() {
+  std::string note;
+  LightShiftHistory oneMarker;  //the fall moved, the low didn't
+  LightShiftHistory small;      //both moved 40 minutes
+  LightShiftHistory opposite;   //fall earlier, low later
+  for (int i = 0; i < 7; i++) {
+    oneMarker.add(timedDay(550, 660), lights8to20());
+    small.add(timedDay(550, 660), lights8to20());
+    opposite.add(timedDay(550, 660), lights8to20());
+  }
+  for (int i = 0; i < 3; i++) {
+    oneMarker.add(timedDay(630, 660), lights8to20());
+    small.add(timedDay(590, 700), lights8to20());
+    opposite.add(timedDay(470, 740), lights8to20());
+  }
+  TEST_ASSERT_FALSE(judgeLightShift(oneMarker, lights8to20(), note));
+  TEST_ASSERT_FALSE(judgeLightShift(small, lights8to20(), note));
+  TEST_ASSERT_FALSE(judgeLightShift(opposite, lights8to20(), note));
+}
+
+void shift_follows_the_light_setting() {
+  //The timer moved to 07:00 and the owner updated the setting: times keep their offset from lights on
+  LightShiftHistory h;
+  for (int i = 0; i < 7; i++) {
+    h.add(timedDay(550, 660), lights8to20());
+  }
+  LightSchedule l7 = lights8to20();
+  l7.onMinute = 420;
+  for (int i = 0; i < 3; i++) {
+    h.add(timedDay(490, 600), l7);
+  }
+  std::string note;
+  TEST_ASSERT_FALSE(judgeLightShift(h, l7, note));
+}
+
+void shift_history_round_trip() {
+  LightShiftHistory h;
+  h.add(timedDay(550, 660), lights8to20());
+  h.add(timedDay(470, 580), lights8to20());
+  h.add(DayMetrics{}, lights8to20());  //not ok: ignored
+  LightShiftHistory back;
+  TEST_ASSERT_TRUE(back.loadText(h.saveText()));
+  TEST_ASSERT_EQUAL_INT(2, back.fallOffsets.size());
+  TEST_ASSERT_EQUAL_STRING(h.saveText().c_str(), back.saveText().c_str());
+  TEST_ASSERT_FALSE(back.loadText("nonsense"));
+  TEST_ASSERT_EQUAL_INT(0, back.lowOffsets.size());
+  h.clear();
+  TEST_ASSERT_EQUAL_INT(0, h.fallOffsets.size());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(day_swing_rise_fall_and_times);
@@ -462,5 +565,11 @@ int main() {
   RUN_TEST(day_record_waits_until_0130);
   RUN_TEST(temp_single_reading_after_gap_does_not_warn);
   RUN_TEST(suggestion_limited_to_one_per_day);
+  RUN_TEST(day_low_minute_is_recorded);
+  RUN_TEST(shift_needs_ten_days);
+  RUN_TEST(shift_detects_earlier_lights_on);
+  RUN_TEST(shift_ignores_noise_and_one_marker);
+  RUN_TEST(shift_follows_the_light_setting);
+  RUN_TEST(shift_history_round_trip);
   return UNITY_END();
 }

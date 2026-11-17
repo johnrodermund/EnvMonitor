@@ -289,7 +289,11 @@ export function Settings() {
           Lights off
           <input type="time" value={lightsOff} onInput={(e) => setLightsOff(val(e))} />
         </label>
-        <p class="muted small">Update when the light timer changes photoperiod.</p>
+        <p class="muted small">
+          In a planted tank the lights drive the daily pH swing: plants and CO₂ change at each light change, so pH moves
+          with it. Keep these times matching your timer, or swings and suggestions are judged at the wrong times. If pH
+          starts falling at a different time for 3 days, the device asks whether the lights were adjusted.
+        </p>
         <label>
           Nutrients OK above EC (µS/cm)
           <input type="text" inputMode="decimal" value={okEc} onInput={(e) => setOkEc(val(e))} />
