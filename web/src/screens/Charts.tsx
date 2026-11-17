@@ -1,6 +1,7 @@
 import { useContext, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { getEvents, getRanges, getReadings } from '../api';
 import { MetricChart } from '../components/MetricChart';
+import { markersFor } from '../logic/events';
 import { toCsv } from '../logic/csv';
 import { ecUnit } from '../logic/format';
 import { BUILTIN_RANGES } from '../logic/status';
@@ -62,8 +63,9 @@ export function Charts() {
     () => ranges.temp.target.map((v) => displayTemp(v, unit) as number) as [number, number],
     [ranges.temp.target[0], ranges.temp.target[1], unit],
   );
-  // Rejected events are kept in the table but not marked on the charts
-  const markers = useMemo(() => (eventsPoll.data?.events ?? []).filter((e) => e.status !== 'rejected'), [eventsPoll.data]);
+  // Rejected events are kept in the table but not marked on the charts; pH swings mark the pH chart only
+  const phMarkers = useMemo(() => markersFor(eventsPoll.data?.events ?? [], 'ph'), [eventsPoll.data]);
+  const ecMarkers = useMemo(() => markersFor(eventsPoll.data?.events ?? [], 'ec'), [eventsPoll.data]);
 
 
   const download = () => {
@@ -107,15 +109,15 @@ export function Charts() {
           </div>
           {!rangesPoll.data && rangesPoll.error && <p class="warn-text small">Using built-in ranges (device ranges unavailable)</p>}
           <p class="muted small">
-            Shaded band is the target range; dots outside it are marked. Vertical lines are events (dashed: not yet reviewed). Drag to zoom,
+            Shaded band is the target range; dots outside it are marked. Vertical lines are events (dashed: not yet reviewed; thin on pH: the daily pH swing). Drag to zoom,
             double-click to reset.
           </p>
           <p class="muted small">
             Events are listed on the <a href="#/events">Events</a> tab.
           </p>
           <div class="chart-wrap" key={`${hours}-${appearance.theme}-${appearance.accent}-${appearance.time_format}-${unit}`}>
-            <MetricChart title="pH" unit="" digits={2} times={times} values={ph} target={ranges.ph.target} events={markers} timeFormat={appearance.time_format} />
-            <MetricChart title="EC" unit={ecUnit(status?.ec_temp_coef)} digits={0} times={times} values={ec} target={ranges.ec.target} events={markers} timeFormat={appearance.time_format} />
+            <MetricChart title="pH" unit="" digits={2} times={times} values={ph} target={ranges.ph.target} events={phMarkers} timeFormat={appearance.time_format} />
+            <MetricChart title="EC" unit={ecUnit(status?.ec_temp_coef)} digits={0} times={times} values={ec} target={ranges.ec.target} events={ecMarkers} timeFormat={appearance.time_format} />
             <MetricChart title="Temp" unit={tempUnitLabel(unit)} digits={1} times={times} values={wt} target={tempTarget} timeFormat={appearance.time_format} />
           </div>
         </>

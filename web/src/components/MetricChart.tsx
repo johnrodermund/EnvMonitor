@@ -51,6 +51,7 @@ function drawEvents(u: uPlot, events: TankEvent[] | undefined) {
     if (t === null || t < min || t > max) continue;
     const x = Math.round(u.valToPos(t, 'x', true));
     const style = markerStyle(e);
+    ctx.lineWidth = (style.thin ? 1 : 2) * dpr;
     ctx.strokeStyle = css(style.color);
     ctx.fillStyle = ctx.strokeStyle;
     ctx.setLineDash(style.dashed ? [5 * dpr, 4 * dpr] : []);

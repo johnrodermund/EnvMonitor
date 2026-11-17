@@ -106,6 +106,17 @@ bool hasPendingEcCoef = false;
 // Web app look (theme, accent, text size, units...), guarded by settingsLock, saved to NVS "ui" by loop()
 Appearance appearance;
 bool hasPendingAppearance = false;
+// pH swing tracking (src/ph_swing.h): the light schedule, thresholds, the 14-value histories and the last day
+// and light change processed. Guarded by settingsLock; loop() saves them to NVS namespace "swing".
+LightSchedule lightSchedule;
+SwingLimits swingLimits;
+SwingHistory swingHistory;
+int lastSwingDay = 0;        //yyyymmdd of the last day whose swing record was made (or skipped)
+long long lastChangeAt = 0;  //UTC seconds of the last light change judged (or skipped)
+long long lastSuggestAt = 0; //UTC seconds of the last buffer/nutrients suggestion added: at most one a day
+LightShiftHistory lightShift;  //daily pH timing against the lights-on setting, for "did the lights get adjusted?"
+unsigned lightsGen = 0;        //counts light-setting changes, which clear lightShift (RAM only)
+bool hasPendingSwing = false;
 
 //Saved API settings as handlers see them; defined up here because the .ino prototypes need it
 struct SavedApiConfig {
@@ -198,6 +209,11 @@ long long epochFromLog(const char *text) {
 // Used only by the sampling task, in detectEvents(); static so they stay off its stack
 DetectSample detectSamples[totalcount];
 char detectTimes[totalcount][24];
+SwingSample swingSamples[totalcount];
+long long swingEpochs[totalcount];
+float swingTemps[totalcount];
+const long long swingQuietS = 172800;  //no suggestion within 2 days of a buffer, nutrients or water change
+TempWatch tempWatch;  //RAM only: a reboot during a long excursion may warn once more
 CandidateHold candidateHold;  //keeps a step's strongest candidate until 3 later windows haven't beaten it
 
 //Runs the detection rule over the reading log after each recorded reading, and fills before/after
@@ -214,6 +230,7 @@ void detectEvents() {
     snprintf(detectTimes[i], sizeof(detectTimes[i]), "%s", readings.timestampAt(i));
     detectSamples[i].ec = ecAt25(readings.ec().getOrderedValue(i), readings.wt().getOrderedValue(i), coef);
     detectSamples[i].ph = readings.ph().getOrderedValue(i);
+    swingSamples[i].wtF = readings.wt().getOrderedValue(i);
   }
   xSemaphoreGive(readingsLock);
   if (count == 0 || !clockIsSet(epochFromLog(detectTimes[count - 1]))) {
@@ -225,6 +242,14 @@ void detectEvents() {
     if (!clockIsSet(epoch)) {
       continue;  //taken before NTP sync
     }
+    LogTime t;
+    parseLogTimestamp(detectTimes[i], t);
+    swingSamples[usable].epoch = epoch;
+    swingSamples[usable].localDay = t.year * 10000 + t.month * 100 + t.day;
+    swingSamples[usable].localMinute = t.hour * 60 + t.minute;
+    swingSamples[usable].ph = detectSamples[i].ph;
+    swingSamples[usable].ec = detectSamples[i].ec;
+    swingSamples[usable].wtF = swingSamples[i].wtF;
     detectSamples[usable] = detectSamples[i];
     detectSamples[usable].epoch = epoch;
     usable++;
@@ -244,6 +269,110 @@ void detectEvents() {
     eventsSavePending = true;
   }
   xSemaphoreGive(eventsLock);
+  detectSwings(now, usable);
+}
+
+//The daily pH swing record, the judgement of the latest light change (a buffer or nutrients suggestion) and the
+//water temperature warning, over swingSamples[0..n), oldest first. Copies settings and state under settingsLock,
+//works unlocked, then adds events under eventsLock.
+void detectSwings(long long now, int n) {
+  if (n < 2) {
+    return;
+  }
+  xSemaphoreTake(settingsLock, portMAX_DELAY);
+  LightSchedule lights = lightSchedule;
+  SwingLimits limits = swingLimits;
+  SwingHistory history = swingHistory;
+  int lastDay = lastSwingDay;
+  long long lastChange = lastChangeAt;
+  long long lastSuggest = lastSuggestAt;
+  LightShiftHistory shift = lightShift;
+  unsigned gen = lightsGen;
+  int intervalMin = interval0 / 60000;
+  xSemaphoreGive(settingsLock);
+  bool stateChanged = false;
+
+  //From 01:30, the day just ended (skipped under 75 % coverage)
+  DayMetrics day{};
+  std::string dayNote, lightShiftNote;
+  int previousDay = swingDayToRecord(swingSamples, n, lastDay);
+  if (previousDay) {
+    day = dayMetrics(swingSamples, n, previousDay, intervalMin);
+    std::string shiftNote;
+    if (day.ok) {
+      dayNote = swingNote(day, lights);
+      shift.add(day, lights);
+      if (judgeLightShift(shift, lights, shiftNote)) {
+        shift.clear();  //the baseline starts over, so it asks again 10 days later at the soonest
+      } else {
+        shiftNote.clear();
+      }
+    }
+    lightShiftNote = shiftNote;
+    lastDay = previousDay;
+    stateChanged = true;
+  }
+
+  //Each light change once, about 2 hours after it; compared with the history before its own values are added
+  ChangeJudgement change = judgeLatestChange(swingSamples, n, lights, intervalMin);
+  SwingSuggestion suggestion;
+  if (change.key && change.changeAt > lastChange) {
+    if (change.ok) {
+      suggestion = judgeSuggestion(change, history, limits);
+      recordJudgement(history, change);
+    }
+    lastChange = change.changeAt;
+    stateChanged = true;
+  }
+
+  Ranges ranges, pi;
+  bool hasPi;
+  activeRanges(ranges, pi, hasPi);
+  for (int i = 0; i < n; i++) {
+    swingEpochs[i] = swingSamples[i].epoch;
+    swingTemps[i] = swingSamples[i].wtF;
+  }
+  std::string tempNote;
+  long long tempAt = 0;
+  bool tempWarning = tempWatch.check(swingEpochs, swingTemps, n, ranges.temp.targetLo, ranges.temp.targetHi,
+                                     intervalMin, tempNote, tempAt);
+
+  bool changed = false;
+  xSemaphoreTake(eventsLock, portMAX_DELAY);
+  if (day.ok) {
+    changed = events.addDetected("ph_swing", "confirmed", day.bigAt, dayNote, day.bigBefore, day.bigAfter, now) ||
+              changed;
+  }
+  if (suggestion.found && swingSuggestionAllowed(now, lastSuggest) && !events.recentFix(now, swingQuietS) &&
+      events.addDetected(suggestion.kind, "suggested", suggestion.at, suggestion.note, change.jumpBefore,
+                         change.jumpAfter, now)) {
+    changed = true;
+    lastSuggest = now;
+    stateChanged = true;
+  }
+  if (tempWarning) {
+    changed = events.addDetected("other", "suggested", tempAt, tempNote, NAN, NAN, now) || changed;
+  }
+  if (!lightShiftNote.empty()) {
+    changed = events.addDetected("other", "suggested", day.fallAt, lightShiftNote, NAN, NAN, now) || changed;
+  }
+  if (changed) {
+    eventsSavePending = true;
+  }
+  xSemaphoreGive(eventsLock);
+
+  if (stateChanged) {
+    xSemaphoreTake(settingsLock, portMAX_DELAY);
+    swingHistory = history;
+    lastSwingDay = lastDay;
+    lastChangeAt = lastChange;
+    lastSuggestAt = lastSuggest;
+    if (lightsGen == gen) {
+      lightShift = shift;  //unless the light setting changed meanwhile, which cleared it
+    }
+    hasPendingSwing = true;
+    xSemaphoreGive(settingsLock);
+  }
 }
 
 float lastEcAdc = 0;
@@ -640,6 +769,14 @@ bool savePendingSettings() {
   bool saveDetect = hasPendingDetect && !saveTitle && !saveInterval;
   bool saveEcCoef = hasPendingEcCoef && !saveTitle && !saveInterval && !saveDetect;
   bool saveAppearance = hasPendingAppearance && !saveTitle && !saveInterval && !saveDetect && !saveEcCoef;
+  bool saveSwing = hasPendingSwing && !saveTitle && !saveInterval && !saveDetect && !saveEcCoef && !saveAppearance;
+  LightSchedule newLights = lightSchedule;
+  SwingLimits newSwingLimits = swingLimits;
+  std::string historyText = saveSwing ? swingHistory.saveText() : "";
+  int newLastDay = lastSwingDay;
+  long long newLastChange = lastChangeAt;
+  long long newLastSuggest = lastSuggestAt;
+  std::string shiftText = saveSwing ? lightShift.saveText() : "";
   String newTitle = pendingTitle;
   unsigned long newInterval = pendingInterval;
   DetectLimits newLimits = detectLimits;
@@ -655,6 +792,8 @@ bool savePendingSettings() {
     hasPendingEcCoef = false;
   } else if (saveAppearance) {
     hasPendingAppearance = false;
+  } else if (saveSwing) {
+    hasPendingSwing = false;
   }
   xSemaphoreGive(settingsLock);
   if (saveTitle) {
@@ -674,8 +813,48 @@ bool savePendingSettings() {
     uiPrefs.begin("ui", false);
     uiPrefs.putString("appearance", appearanceText.c_str());
     uiPrefs.end();
+  } else if (saveSwing) {
+    Preferences swingPrefs;
+    swingPrefs.begin("swing", false);
+    swingPrefs.putInt("lights", newLights.onMinute * 1440 + newLights.offMinute);
+    swingPrefs.putFloat("ok_ec", newSwingLimits.nutrientsOkEc);
+    swingPrefs.putFloat("factor", newSwingLimits.alertFactor);
+    swingPrefs.putString("history", historyText.c_str());
+    swingPrefs.putInt("last_day", newLastDay);
+    swingPrefs.putLong64("last_chg", newLastChange);
+    swingPrefs.putLong64("last_sug", newLastSuggest);
+    swingPrefs.putString("shift", shiftText.c_str());
+    swingPrefs.end();
   }
-  return saveInterval || saveTitle || saveDetect || saveEcCoef || saveAppearance;
+  return saveInterval || saveTitle || saveDetect || saveEcCoef || saveAppearance || saveSwing;
+}
+
+//Called at boot only; defaults for anything not saved or out of range
+void loadSwingState() {
+  Preferences swingPrefs;
+  if (!swingPrefs.begin("swing", true)) {
+    return;  //namespace not created yet
+  }
+  int lights = swingPrefs.getInt("lights", -1);
+  int on = lights / 1440, off = lights % 1440;
+  if (lights >= 0 && on < 1440 && on != off) {
+    lightSchedule.onMinute = on;
+    lightSchedule.offMinute = off;
+  }
+  float okEc = swingPrefs.getFloat("ok_ec", swingLimits.nutrientsOkEc);
+  if (okEc >= 0 && okEc <= 5000) {
+    swingLimits.nutrientsOkEc = okEc;
+  }
+  float factor = swingPrefs.getFloat("factor", swingLimits.alertFactor);
+  if (factor >= 1.1f && factor <= 5) {
+    swingLimits.alertFactor = factor;
+  }
+  swingHistory.loadText(swingPrefs.getString("history", "").c_str());
+  lastSwingDay = swingPrefs.getInt("last_day", 0);
+  lastChangeAt = swingPrefs.getLong64("last_chg", 0);
+  lastSuggestAt = swingPrefs.getLong64("last_sug", 0);
+  lightShift.loadText(swingPrefs.getString("shift", "").c_str());
+  swingPrefs.end();
 }
 
 //Called at boot only; defaults for anything not saved
@@ -887,8 +1066,9 @@ bool loadDeviceRanges(Ranges &out) {
   return text.length() && parseThresholds(text.c_str(), out, error);
 }
 
-std::string rangesText() {
-  Ranges device, pi, chosen;
+//The ranges the Dashboard uses: the device's, else the Pi's, else the built-in ones. pi holds the Pi's when hasPi.
+RangeSource activeRanges(Ranges &chosen, Ranges &pi, bool &hasPi) {
+  Ranges device;
   xSemaphoreTake(settingsLock, portMAX_DELAY);
   bool hasDevice = hasDeviceRanges;
   if (hasDevice) {
@@ -900,8 +1080,14 @@ std::string rangesText() {
   bool hasPiText = piCache.thresholdsBody(piText);
   xSemaphoreGive(piCacheLock);
   std::string error;
-  bool hasPi = hasPiText && parseThresholds(piText, pi, error);
-  RangeSource source = chooseRanges(hasDevice, device, hasPi, pi, chosen);
+  hasPi = hasPiText && parseThresholds(piText, pi, error);
+  return chooseRanges(hasDevice, device, hasPi, pi, chosen);
+}
+
+std::string rangesText() {
+  Ranges pi, chosen;
+  bool hasPi;
+  RangeSource source = activeRanges(chosen, pi, hasPi);
   return std::string("{\"source\":") + jsonString(rangeSourceName(source)) + ",\"ranges\":" + rangesJson(chosen) +
          ",\"pi\":" + (hasPi ? rangesJson(pi) : std::string("null")) + "}";
 }
@@ -922,7 +1108,8 @@ void registerApiRoutes() {
 
   server.on("/api/settings", HTTP_GET, [](AsyncWebServerRequest *request) {
     xSemaphoreTake(settingsLock, portMAX_DELAY);
-    std::string json = settingsJson(interval0 / 60000, title.c_str(), detectLimits, ecTempCoef, appearance);
+    std::string json = settingsJson(interval0 / 60000, title.c_str(), detectLimits, ecTempCoef, appearance,
+                                    lightSchedule, swingLimits);
     xSemaphoreGive(settingsLock);
     sendJson(request, 200, json);
   });
@@ -946,8 +1133,13 @@ void registerApiRoutes() {
     look.chartWindow = formValue(request, "chart_window").c_str();
     look.tileDetails = formValue(request, "tile_details").c_str();
     bool hasAppearance = look.any();
+    String lightsOn = formValue(request, "lights_on");
+    String lightsOff = formValue(request, "lights_off");
+    String nutrientsOkEc = formValue(request, "nutrients_ok_ec");
+    String swingFactor = formValue(request, "swing_alert_factor");
+    bool hasSwing = lightsOn.length() || lightsOff.length() || nutrientsOkEc.length() || swingFactor.length();
     std::string error;
-    if (!hasBasic && !hasDetect && !hasEcCoef && !hasAppearance) {
+    if (!hasBasic && !hasDetect && !hasEcCoef && !hasAppearance && !hasSwing) {
       sendError(request, 400, "nothing to save");
       return;
     }
@@ -964,9 +1156,13 @@ void registerApiRoutes() {
     xSemaphoreTake(settingsLock, portMAX_DELAY);
     DetectLimits limits = detectLimits;
     Appearance newAppearance = appearance;
+    LightSchedule newLights = lightSchedule;
+    SwingLimits newSwingLimits = swingLimits;
     bool valid = (!hasDetect || applyDetectSettings(topupMinDrop.c_str(), feedingMinRise.c_str(),
                                                     feedingEnabled.c_str(), limits, error)) &&
-                 (!hasAppearance || applyAppearanceForm(look, newAppearance, error));
+                 (!hasAppearance || applyAppearanceForm(look, newAppearance, error)) &&
+                 (!hasSwing || applySwingSettings(lightsOn.c_str(), lightsOff.c_str(), nutrientsOkEc.c_str(),
+                                                  swingFactor.c_str(), newLights, newSwingLimits, error));
     if (valid) {
       if (interval.length()) {
         interval0 = interval.toInt() * 60000UL;
@@ -989,6 +1185,15 @@ void registerApiRoutes() {
       if (hasAppearance) {
         appearance = newAppearance;
         hasPendingAppearance = true;
+      }
+      if (hasSwing) {
+        if (newLights.onMinute != lightSchedule.onMinute || newLights.offMinute != lightSchedule.offMinute) {
+          lightShift.clear();  //times are kept against the setting, so a new setting needs a new baseline
+          lightsGen++;
+        }
+        lightSchedule = newLights;
+        swingLimits = newSwingLimits;
+        hasPendingSwing = true;
       }
     }
     xSemaphoreGive(settingsLock);
@@ -1187,6 +1392,7 @@ void setup() {
   detectLimits = loadDetectLimits();
   ecTempCoef = loadEcTempCoef();
   appearance = loadAppearance();
+  loadSwingState();
   Serial.begin(115200);
 
   Serial.println("Starting the LittleFS Webserver..");

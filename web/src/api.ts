@@ -87,6 +87,10 @@ export const saveSettings = (p: {
   time_format?: string;
   chart_window?: string;
   tile_details?: string;
+  lights_on?: string;
+  lights_off?: string;
+  nutrients_ok_ec?: number;
+  swing_alert_factor?: number;
 }) => {
   const f: Record<string, string> = {};
   if (p.interval !== undefined) f.interval = String(p.interval);
@@ -95,6 +99,10 @@ export const saveSettings = (p: {
   if (p.feeding_min_rise !== undefined) f.feeding_min_rise = String(p.feeding_min_rise);
   if (p.feeding_enabled !== undefined) f.feeding_enabled = String(p.feeding_enabled);
   if (p.ec_temp_coef !== undefined) f.ec_temp_coef = String(p.ec_temp_coef);
+  if (p.lights_on !== undefined) f.lights_on = p.lights_on;
+  if (p.lights_off !== undefined) f.lights_off = p.lights_off;
+  if (p.nutrients_ok_ec !== undefined) f.nutrients_ok_ec = String(p.nutrients_ok_ec);
+  if (p.swing_alert_factor !== undefined) f.swing_alert_factor = String(p.swing_alert_factor);
   for (const k of ['theme', 'accent', 'text_size', 'temp_unit', 'time_format', 'chart_window', 'tile_details'] as const) {
     const v = p[k];
     if (v !== undefined) f[k] = v;

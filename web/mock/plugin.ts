@@ -31,6 +31,7 @@ let settings = {
   interval_min: 10, title: 'Reservoir', topup_min_drop: 3, feeding_min_rise: 5, feeding_enabled: false, ec_temp_coef: 2,
   theme: 'system', accent: 'green', text_size: 'normal', temp_unit: 'F', time_format: '24', chart_window: '24',
   tile_details: true as boolean,
+  lights_on: '07:00', lights_off: '19:00', nutrients_ok_ec: 275, swing_alert_factor: 1.5,
 };
 
 // Stateful copy of the events fixture, changed by POST /api/events the way the device does it
@@ -200,6 +201,10 @@ export function mockApi(): Plugin {
               if (form.get('feeding_min_rise')) settings.feeding_min_rise = Number(form.get('feeding_min_rise'));
               if (form.get('feeding_enabled')) settings.feeding_enabled = form.get('feeding_enabled') === 'true';
               if (form.get('ec_temp_coef')) settings.ec_temp_coef = Number(form.get('ec_temp_coef'));
+              if (form.get('lights_on')) settings.lights_on = form.get('lights_on') ?? '';
+              if (form.get('lights_off')) settings.lights_off = form.get('lights_off') ?? '';
+              if (form.get('nutrients_ok_ec')) settings.nutrients_ok_ec = Number(form.get('nutrients_ok_ec'));
+              if (form.get('swing_alert_factor')) settings.swing_alert_factor = Number(form.get('swing_alert_factor'));
               for (const k of ['theme', 'accent', 'text_size', 'temp_unit', 'time_format', 'chart_window'] as const) {
                 const v = form.get(k);
                 if (v) settings[k] = v;

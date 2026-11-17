@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { eventDelta, eventLabel, eventSeconds, eventsInWindow, markerStyle, rowActions, toLocalInput, fromLocalInput } from './events';
+import { eventDelta, eventLabel, eventSeconds, eventsInWindow, kindLabel, LOGGABLE_KINDS, markersFor, markerStyle, rowActions, toLocalInput, fromLocalInput } from './events';
 import type { TankEvent } from '../types';
 
 function ev(p: Partial<TankEvent>): TankEvent {
@@ -78,5 +78,36 @@ describe('events logic', () => {
     expect(rowActions(ev({ status: 'confirmed' }))).toEqual(['reject', 'edit']);
     expect(rowActions(ev({ status: 'rejected' }))).toEqual(['confirm', 'edit']);
     expect(rowActions(ev({ source: 'manual', status: 'confirmed' }))).toEqual(['delete', 'edit']);
+  });
+});
+
+describe('pH swing events', () => {
+  it('labels the new kinds', () => {
+    expect(kindLabel('ph_swing')).toBe('pH swing');
+    expect(kindLabel('nutrients')).toBe('Nutrients');
+    expect(eventLabel(ev({ kind: 'ph_swing', detail: null }))).toBe('pH swing');
+  });
+
+  it('offers every kind but pH swing in the Log event form', () => {
+    expect(LOGGABLE_KINDS).toContain('nutrients');
+    expect(LOGGABLE_KINDS).toContain('topup');
+    expect(LOGGABLE_KINDS).not.toContain('ph_swing');
+  });
+
+  it('marks pH swings on the pH chart only, and drops rejected events', () => {
+    const events = [
+      ev({ seq: 1, kind: 'ph_swing', status: 'confirmed', detail: null }),
+      ev({ seq: 2, kind: 'topup' }),
+      ev({ seq: 3, kind: 'buffer', status: 'rejected' }),
+      ev({ seq: 4, kind: 'nutrients', detail: null }),
+    ];
+    expect(markersFor(events, 'ph').map((e) => e.seq)).toEqual([1, 2, 4]);
+    expect(markersFor(events, 'ec').map((e) => e.seq)).toEqual([2, 4]);
+  });
+
+  it('draws the swing marker thin, in its own colour, never dashed', () => {
+    const style = markerStyle(ev({ kind: 'ph_swing', status: 'suggested' }));
+    expect(style).toEqual({ color: '--event-swing', dashed: false, thin: true });
+    expect(markerStyle(ev({ kind: 'topup' })).thin).toBe(false);
   });
 });
