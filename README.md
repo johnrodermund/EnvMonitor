@@ -2,6 +2,14 @@
 
 ESP32-C3 firmware that logs pH, electrical conductivity (EC) and water temperature, and serves a web app with a dashboard, charts, measure and calibrate screens and settings over Wi-Fi.
 
+## What it does
+
+- Logs pH, EC (referred to 25 °C with an adjustable temperature coefficient) and water temperature on a set interval.
+- Detects tank events such as top-ups and feedings from the readings, and lets you confirm, reject, edit or add them.
+- Tracks the daily pH swing around the light changes and suggests a buffer or nutrient dose when the swing grows past its usual size.
+- Serves a Preact web app with Dashboard, Charts (with CSV export), Measure, Calibrate, Events, Settings, Appearance and Diagnostics screens.
+- Sends readings and events to a server on your network for long-term storage and trend review (see [Companion server](#companion-server)).
+
 ## Hardware
 
 | Signal | GPIO |
@@ -44,6 +52,13 @@ The logic in `src/` has no Arduino dependencies and runs on your computer with P
 pio test -e native
 ```
 
+The web app has its own tests:
+
+```bash
+cd web
+npm test
+```
+
 ## First run
 
 1. With no saved network, the device opens a Wi-Fi access point called `EnvMonitor-Setup`.
@@ -63,6 +78,16 @@ curl --data-urlencode "url=http://<server>:8000" --data-urlencode "token=<token>
 ```
 
 Open `http://<device-ip>/apiconfig` (or the Settings and Diagnostics screens) to see the queue and the last HTTP result. The token is kept in the device's NVS storage and is never shown.
+
+## Companion server
+
+The server I run is a separate project on a Raspberry Pi (not public yet):
+
+- A FastAPI service stores readings and tank events in SQLite behind a bearer token, and serves 24-hour, 7-day and 30-day statistics.
+- A reviewer runs every 10 minutes and flags drift, noise, stuck sensors and readings outside the target or valid ranges, which are configurable.
+- A local LLM (through Ollama) turns those flags into a short report. Code sets the severity (`ok`, `watch` or `act`); the model only writes the headline and summary.
+
+The device shows the server's ranges, flags and latest report on the Dashboard, and falls back to its own ranges when the server can't be reached.
 
 ## Security
 
